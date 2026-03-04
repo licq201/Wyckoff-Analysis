@@ -199,7 +199,8 @@ def run_backtest(
 
     market_cap_map = fetch_market_cap_map()
     sector_map = fetch_sector_map()
-    cfg = FunnelConfig(trading_days=trading_days)
+    # 默认关闭 EVR 提高信号质量
+    cfg = FunnelConfig(trading_days=trading_days, enable_evr_trigger=False)
 
     records: list[TradeRecord] = []
     signal_days = 0
