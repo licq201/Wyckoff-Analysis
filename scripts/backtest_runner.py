@@ -29,7 +29,7 @@ from integrations.fetch_a_share_csv import get_stocks_by_board, _normalize_symbo
 
 DEFAULT_HOLD_DAYS = 5
 DEFAULT_EXIT_MODE = "sltp"
-DEFAULT_STOP_LOSS_PCT = -7.0
+DEFAULT_STOP_LOSS_PCT = -9.0
 DEFAULT_TAKE_PROFIT_PCT = 0.0
 
 
@@ -693,7 +693,7 @@ def main() -> int:
         "--stop-loss",
         type=float,
         default=DEFAULT_STOP_LOSS_PCT,
-        help=f"止损线(%%), 如 -7.0 表示跌破 7%% 止损. 0 表示不设止损 (default: {DEFAULT_STOP_LOSS_PCT})",
+        help=f"止损线(%%), 如 -9.0 表示跌破 9%% 止损. 0 表示不设止损 (default: {DEFAULT_STOP_LOSS_PCT})",
     )
     parser.add_argument(
         "--take-profit",

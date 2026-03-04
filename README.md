@@ -133,13 +133,13 @@ python -m scripts.backtest_runner \
   --top-n 6 \
   --board all \
   --exit-mode sltp \
-  --stop-loss -7 \
+  --stop-loss -9 \
   --take-profit 0 \
   --sample-size 300 \
   --output-dir analysis/backtest
 ```
 
-默认参数已经切到“只止损不止盈”的实战口径：`--hold-days 5 --exit-mode sltp --stop-loss -7 --take-profit 0`。
+默认参数已经切到“只止损不止盈”的实战口径：`--hold-days 5 --exit-mode sltp --stop-loss -9 --take-profit 0`。
 
 输出文件：
 - `summary_*.md`：收益统计 + 风险统计（最大回撤、VaR95、CVaR95、最长连亏）
