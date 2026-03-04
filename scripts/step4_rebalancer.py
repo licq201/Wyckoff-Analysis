@@ -282,8 +282,9 @@ class WyckoffOrderEngine:
                         effective_stop_loss = hard_stop
 
         if action == "EXIT":
-            sell_shares = int(math.floor(max(held_shares, 0) / 100.0) * 100)
-            if sell_shares < 100:
+            # A 股清仓允许卖出零股；EXIT 必须一次性卖完全部持仓。
+            sell_shares = int(max(held_shares, 0))
+            if sell_shares <= 0:
                 return self._no_trade(dec, name, "无可卖持仓")
             fill_price = current_price * (1.0 - self.SLIPPAGE_BPS)
             proceeds = sell_shares * fill_price
@@ -446,7 +447,9 @@ class WyckoffOrderEngine:
         )
         slippage_abs = max(base_slippage, atr_slippage)
         fill_price = current_price + slippage_abs
-        risk_per_share = fill_price - effective_stop_loss
+        # 对称滑点口径：入场更贵，止损成交更差，避免低估极端风险。
+        expected_exit_price = max(effective_stop_loss - slippage_abs, 0.0)
+        risk_per_share = fill_price - expected_exit_price
         if risk_per_share <= 0:
             return self._no_trade(dec, name, "风险参数异常(risk_per_share<=0)")
 
@@ -496,6 +499,7 @@ class WyckoffOrderEngine:
                 audit_parts
                 + [
                     f"risk_per_share={risk_per_share:.4f}",
+                    f"expected_exit_price={expected_exit_price:.4f}",
                     f"base_slippage={base_slippage:.4f}",
                     f"atr_slippage={atr_slippage:.4f}",
                     f"budget={budget:.2f}",
