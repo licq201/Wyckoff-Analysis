@@ -779,35 +779,24 @@ def _calc_close_return_pct(close_series: pd.Series, lookback: int) -> float | No
     return (end - start) / start * 100.0
 
 
-def _rank_l3_watchlist(
+def _rank_l3_candidates(
     l3_symbols: list[str],
     df_map: dict[str, pd.DataFrame],
     sector_map: dict[str, str],
     triggers: dict[str, list[tuple[str, float]]],
     top_sectors: list[str],
-    top_k: int = 15,
     l2_channel_map: dict[str, str] | None = None,
-) -> tuple[list[str], list[dict], dict[str, float], list[dict]]:
+) -> tuple[list[str], dict[str, float]]:
     """
-    对 L3 股票做统一优先级排序，并给出 TopK 自选建议。
-    评分构成（分位）：
-    - 20日收益强度 40%
-    - 5日收益强度 25%
-    - 最近5日最小量比（越小越好）20%
-    - 威科夫触发强度 15%
-    - Top行业额外加分 0.05
+    对 L3 股票做统一优先级排序，仅用于 AI 输入队列。
     """
     if not l3_symbols:
-        return ([], [], {}, [])
+        return ([], {})
 
     trigger_score_map: dict[str, float] = {}
-    trigger_reason_map: dict[str, list[str]] = {}
-    for key, label in TRIGGER_LABELS.items():
+    for key in TRIGGER_LABELS.keys():
         for code, score in triggers.get(key, []):
             trigger_score_map[code] = max(trigger_score_map.get(code, 0.0), float(score))
-            trigger_reason_map.setdefault(code, [])
-            if label not in trigger_reason_map[code]:
-                trigger_reason_map[code].append(label)
 
     rows: list[dict] = []
     channel_map = l2_channel_map or {}
@@ -836,7 +825,6 @@ def _rank_l3_watchlist(
                 "ret5": ret5,
                 "min_vol_ratio_5d": min_vol_ratio_5d,
                 "trigger_score": float(trigger_score_map.get(code, 0.0)),
-                "reasons": "、".join(trigger_reason_map.get(code, [])),
                 "l2_channel": l2_channel,
             }
         )
@@ -879,80 +867,7 @@ def _rank_l3_watchlist(
         str(r["code"]): float(r["watch_score"])
         for _, r in rank_df.iterrows()
     }
-
-    def _fnum(v: object, nd: int = 2, fallback: str = "-") -> str:
-        try:
-            x = float(v)  # type: ignore[arg-type]
-        except Exception:
-            return fallback
-        if pd.isna(x):
-            return fallback
-        return f"{x:.{nd}f}"
-
-    ranked_rows: list[dict] = []
-    for _, r in rank_df.iterrows():
-        trigger_reason = str(r.get("reasons", "")).strip()
-        industry = str(r.get("industry", "")).strip() or "未知行业"
-        l2_channel = str(r.get("l2_channel", "")).strip() or "未标注通道"
-        hot_bonus = float(r.get("hot_bonus", 0.0))
-        ret20 = r.get("ret20")
-        ret5 = r.get("ret5")
-        dry_ratio = r.get("min_vol_ratio_5d")
-        parts: list[str] = []
-        parts.append(f"L2:{l2_channel}")
-        if hot_bonus > 0:
-            parts.append("Top行业共振")
-        else:
-            parts.append("威科夫候选")
-        if trigger_reason:
-            parts.append(f"L4痕迹:{trigger_reason}")
-        else:
-            parts.append("未触发L4扳机")
-        try:
-            dry_v = float(dry_ratio)  # type: ignore[arg-type]
-            if not pd.isna(dry_v) and dry_v <= 1.0:
-                parts.append(f"近5日有缩量(最小量比{dry_v:.2f})")
-        except Exception:
-            pass
-        parts.append(
-            f"20日动量{_fnum(ret20, 1, '0.0')}%/5日{_fnum(ret5, 1, '0.0')}%"
-        )
-        ranked_rows.append(
-            {
-                "code": str(r["code"]),
-                "industry": industry,
-                "reason": "；".join(parts),
-                "score": float(r["watch_score"]),
-                "ret20": (float(ret20) if pd.notna(pd.to_numeric(ret20, errors='coerce')) else None),
-                "ret5": (float(ret5) if pd.notna(pd.to_numeric(ret5, errors='coerce')) else None),
-                "min_vol_ratio_5d": (
-                    float(dry_ratio)
-                    if pd.notna(pd.to_numeric(dry_ratio, errors="coerce"))
-                    else None
-                ),
-                "trigger_labels": trigger_reason,
-                "l2_channel": l2_channel,
-            }
-        )
-
-    top_rows: list[dict] = []
-    for _, r in rank_df.head(max(int(top_k), 0)).iterrows():
-        code = str(r["code"])
-        reason = "威科夫候选"
-        for row in ranked_rows:
-            if row.get("code") == code:
-                reason = str(row.get("reason", "")).strip() or reason
-                break
-        top_rows.append(
-            {
-                "code": code,
-                "industry": str(r.get("industry", "")),
-                "reason": reason,
-                "score": float(r["watch_score"]),
-                "l2_channel": str(r.get("l2_channel", "")).strip() or "未标注通道",
-            }
-        )
-    return (ranked_symbols, top_rows, score_map, ranked_rows)
+    return (ranked_symbols, score_map)
 
 
 def run_funnel_job() -> tuple[dict[str, list[tuple[str, float]]], dict]:
@@ -1200,13 +1115,12 @@ def run_funnel_job() -> tuple[dict[str, list[tuple[str, float]]], dict]:
     exit_signals = layer5_exit_signals(l2_passed + markup_symbols, all_df_map, accum_stage_map, cfg)
 
     total_hits = sum(len(v) for v in triggers.values())
-    ranked_l3_symbols, watchlist_top15, l3_score_map, l3_ranked_rows = _rank_l3_watchlist(
+    ranked_l3_symbols, l3_score_map = _rank_l3_candidates(
         l3_symbols=l3_passed,
         df_map=all_df_map,
         sector_map=sector_map,
         triggers=triggers,
         top_sectors=top_sectors,
-        top_k=15,
         l2_channel_map=l2_channel_map,
     )
     metrics = {
@@ -1231,8 +1145,6 @@ def run_funnel_job() -> tuple[dict[str, list[tuple[str, float]]], dict]:
         "top_sectors": top_sectors,
         "layer3_symbols": ranked_l3_symbols or l3_passed,
         "layer3_score_map": l3_score_map,
-        "layer3_ranked_rows": l3_ranked_rows,
-        "watchlist_top15": watchlist_top15,
         "total_hits": total_hits,
         "by_trigger": {k: len(v) for k, v in triggers.items()},
         "benchmark_context": benchmark_context,
