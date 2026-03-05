@@ -31,7 +31,7 @@ from core.wyckoff_engine import (
     normalize_hist_from_fetch,
     run_funnel,
 )
-from integrations.data_source import fetch_index_hist, fetch_sector_map, fetch_market_cap_map
+from integrations.data_source import fetch_sector_map, fetch_market_cap_map
 from core.single_stock_logic import render_single_stock_page
 from scripts.step3_batch_report import generate_stock_payload
 from integrations.ai_prompts import WYCKOFF_FUNNEL_SYSTEM_PROMPT
@@ -194,11 +194,8 @@ with content_col:
                         progress_bar.progress((idx + 1) / len(pool_symbols))
                     progress_ph.empty()
 
+                    # web 端大盘基准不拉取，直接传 None
                     bench_df_fg = None
-                    try:
-                        bench_df_fg = fetch_index_hist("000001", start_s, end_s)
-                    except Exception:
-                        pass
 
                     funnel_result = run_funnel(
                         all_symbols=list(data_map_fg.keys()),

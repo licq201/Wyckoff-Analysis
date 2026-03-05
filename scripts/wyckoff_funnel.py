@@ -1218,31 +1218,31 @@ def run(webhook_url: str) -> tuple[bool, list[dict], dict]:
     ]
     l2_channel_map = metrics.get("layer2_channel_map", {}) or {}
     
-    # 策略A：大盘水温驱动（Top-Down 择时顺势策略）
+    # 策略：大盘水温驱动的双轨制（Top-Down 择时顺势策略）
+    # 配额配置（可通过环境变量覆盖）
     total_cap = max(int(os.getenv("FUNNEL_AI_TOTAL_CAP", "20")), 0)
-    track_max = max(int(os.getenv("FUNNEL_AI_TRACK_MAX", "15")), 0)
-    neutral_max = max(int(os.getenv("FUNNEL_AI_NEUTRAL_MAX", "10")), 0)
-    
-    regime = benchmark_context.get("regime", "NEUTRAL")
-    
-    if regime == "RISK_ON":
-        first_track = "Trend"
-        first_limit = track_max
-        second_track = "Accum"
-        second_limit = track_max
-    elif regime == "RISK_OFF":
-        first_track = "Accum"
-        first_limit = track_max
-        second_track = "Trend"
-        second_limit = track_max
-    else:  # NEUTRAL
-        first_track = "Trend"
-        first_limit = neutral_max
-        second_track = "Accum"
-        second_limit = neutral_max
+    risk_on_trend = max(int(os.getenv("FUNNEL_AI_RISK_ON_TREND", "15")), 0)
+    risk_on_accum = max(int(os.getenv("FUNNEL_AI_RISK_ON_ACCUM", "8")), 0)
+    risk_off_trend = max(int(os.getenv("FUNNEL_AI_RISK_OFF_TREND", "8")), 0)
+    risk_off_accum = max(int(os.getenv("FUNNEL_AI_RISK_OFF_ACCUM", "15")), 0)
+    neutral_trend = max(int(os.getenv("FUNNEL_AI_NEUTRAL_TREND", "10")), 0)
+    neutral_accum = max(int(os.getenv("FUNNEL_AI_NEUTRAL_ACCUM", "10")), 0)
 
-    trend_quota = first_limit if first_track == "Trend" else second_limit
-    accum_quota = second_limit if second_track == "Accum" else first_limit
+    regime = benchmark_context.get("regime", "NEUTRAL")
+
+    # 根据大盘水温动态分配配额（确保轨道差异化）
+    if regime == "RISK_ON":
+        trend_quota = risk_on_trend      # Trend 占大头
+        accum_quota = risk_on_accum      # Accum 补充
+        first_track = "Trend"
+    elif regime == "RISK_OFF":
+        trend_quota = risk_off_trend     # Trend 只补充
+        accum_quota = risk_off_accum     # Accum 占大头
+        first_track = "Accum"
+    else:  # NEUTRAL
+        trend_quota = neutral_trend      # 平衡
+        accum_quota = neutral_accum
+        first_track = "Trend"  # 中立时优先主升
 
     trend_channel_tags = {"主升通道", "点火破局"}
     accum_channel_tags = {"潜伏通道", "吸筹通道", "地量蓄势", "暗中护盘"}
@@ -1272,6 +1272,50 @@ def run(webhook_url: str) -> tuple[bool, list[dict], dict]:
             out.append(c)
         return out
 
+    # 构建触发信号映射（用于优先级判定）
+    sos_hit_set = set(str(code).strip() for code, _ in triggers.get("sos", []))
+    spring_hit_set = set(str(code).strip() for code, _ in triggers.get("spring", []))
+    lps_hit_set = set(str(code).strip() for code, _ in triggers.get("lps", []))
+
+    # 构建候选集，并计算优先级权重
+    def _calc_priority_score(code: str, is_trend_side: bool) -> float:
+        """计算优先级分数（越高越优先）"""
+        score = 0.0
+
+        # Markup 股票加权（+100）
+        if code in markup_symbols:
+            score += 100.0
+
+        # 触发信号加权
+        if code in sos_hit_set:
+            score += 50.0
+        if code in spring_hit_set:
+            score += 45.0
+        if code in lps_hit_set:
+            score += 40.0
+
+        # Exit 信号减权
+        exit_sig = exit_signals.get(code, {})
+        if exit_sig.get("signal") == "profit_target":
+            score -= 30.0  # 已达止盈，降低优先级但不排除
+        elif exit_sig.get("signal") == "stop_loss":
+            score -= 100.0  # 触发止损，几乎不选
+        elif exit_sig.get("signal") == "distribution_warning":
+            score -= 20.0  # Distribution 警告，略微降低
+
+        return score
+
+    # 优先级排序的候选集
+    trend_candidates_with_score = []
+    accum_candidates_with_score = []
+
+    # L4触发 + Markup 股票优先入 Trend
+    markup_trend_candidates = [c for c in markup_symbols if _is_trend_track(c) or c in sos_hit_set]
+    for code in _dedup_order(markup_trend_candidates):
+        score = _calc_priority_score(code, True)
+        trend_candidates_with_score.append((code, score))
+
+    # SOS 触发的 Trend 股票
     sos_hit_codes = [
         str(code).strip()
         for code, _ in sorted(
@@ -1279,25 +1323,36 @@ def run(webhook_url: str) -> tuple[bool, list[dict], dict]:
         )
         if str(code).strip()
     ]
-    accum_hit_candidates = triggers.get("spring", []) + triggers.get("lps", [])
-    accum_hit_codes = [
-        str(code).strip()
-        for code, _ in sorted(
-            accum_hit_candidates, key=lambda x: -float(x[1] if x[1] is not None else 0.0)
-        )
-        if str(code).strip()
-    ]
+    for code in _dedup_order(sos_hit_codes):
+        if code not in [c[0] for c in trend_candidates_with_score]:
+            score = _calc_priority_score(code, True)
+            trend_candidates_with_score.append((code, score))
 
-    trend_candidates = _dedup_order(
-        sos_hit_codes
-        + [c for c in sorted_codes if _is_trend_track(c)]
-        + [c for c in l3_ranked_symbols if _is_trend_track(c)]
-    )
-    accum_candidates = _dedup_order(
-        accum_hit_codes
-        + [c for c in sorted_codes if _is_accum_track(c)]
-        + [c for c in l3_ranked_symbols if _is_accum_track(c)]
-    )
+    # 其他 Trend 通道的候选
+    for code in sorted_codes + l3_ranked_symbols:
+        if _is_trend_track(code) and code not in [c[0] for c in trend_candidates_with_score]:
+            score = _calc_priority_score(code, True)
+            trend_candidates_with_score.append((code, score))
+
+    # Accum 触发（Spring/LPS）
+    accum_hit_candidates = triggers.get("spring", []) + triggers.get("lps", [])
+    for code, _ in sorted(accum_hit_candidates, key=lambda x: -float(x[1] if x[1] is not None else 0.0)):
+        code = str(code).strip()
+        score = _calc_priority_score(code, False)
+        accum_candidates_with_score.append((code, score))
+
+    # 其他 Accum 通道的候选
+    for code in sorted_codes + l3_ranked_symbols:
+        if _is_accum_track(code) and code not in [c[0] for c in accum_candidates_with_score]:
+            score = _calc_priority_score(code, False)
+            accum_candidates_with_score.append((code, score))
+
+    # 按优先级排序
+    trend_candidates_with_score.sort(key=lambda x: -x[1])
+    accum_candidates_with_score.sort(key=lambda x: -x[1])
+
+    trend_candidates = [c[0] for c in trend_candidates_with_score]
+    accum_candidates = [c[0] for c in accum_candidates_with_score]
 
     selected_seen: set[str] = set()
     trend_selected: list[str] = []
@@ -1319,18 +1374,26 @@ def run(webhook_url: str) -> tuple[bool, list[dict], dict]:
         selected_seen.add(code)
         return True
 
-    track_candidates = {
-        "Trend": trend_candidates,
-        "Accum": accum_candidates,
-    }
-    
-    # 第一遍：优先轨尽可能拿满额度
-    for code in track_candidates[first_track]:
-        _add_to_selected(code, first_track)
-        
-    # 第二遍：次要轨补充剩余额度（如果总额度还未满）
-    for code in track_candidates[second_track]:
-        _add_to_selected(code, second_track)
+    # 改进的选入策略：两轨轮番补充（而非一轨拿满再补充）
+    # 这样可以确保两轨都有最高优先级的候选
+    trend_idx = 0
+    accum_idx = 0
+
+    # 轮番从两轨中各取一个，直到配额满或候选耗尽
+    while (len(trend_selected) < trend_quota or len(accum_selected) < accum_quota) and (trend_idx < len(trend_candidates) or accum_idx < len(accum_candidates)):
+        # Trend 轨补充
+        if len(trend_selected) < trend_quota and trend_idx < len(trend_candidates):
+            code = trend_candidates[trend_idx]
+            trend_idx += 1
+            if code not in selected_seen:
+                _add_to_selected(code, "Trend")
+
+        # Accum 轨补充
+        if len(accum_selected) < accum_quota and accum_idx < len(accum_candidates):
+            code = accum_candidates[accum_idx]
+            accum_idx += 1
+            if code not in selected_seen:
+                _add_to_selected(code, "Accum")
 
     selected_for_ai = trend_selected + accum_selected
 
@@ -1382,11 +1445,8 @@ def run(webhook_url: str) -> tuple[bool, list[dict], dict]:
 
     print(
         f"[funnel] 候选分层: 命中事件={metrics['total_hits']}, 命中股票={unique_hit_count}, "
-        f"Trend轨=命中{trend_hit_selected}+L3补充{trend_l3_only}=>{len(trend_selected)}, "
-        f"Accum轨=命中{accum_hit_selected}+L3补充{accum_l3_only}=>{len(accum_selected)}, "
-        f"AI输入总计=命中{hit_selected_count}+L3补充{l3_only_count}=>{len(selected_for_ai)} "
-        f"[{regime} {first_track}优先] (Trend配额{trend_quota}, Accum配额{accum_quota}, 总上限{total_cap}), "
-        f"AI分析={len(selected_for_ai)}"
+        f"配额配置=[{regime}: Trend={trend_quota}, Accum={accum_quota}, 总上限={total_cap}], "
+        f"最终选入: Trend={len(trend_selected)}, Accum={len(accum_selected)}, 总计={len(selected_for_ai)}"
     )
 
     bench_line = "未知"
@@ -1438,12 +1498,12 @@ def run(webhook_url: str) -> tuple[bool, list[dict], dict]:
         (
             f"**候选分层**: L3股票{metrics['layer3']} "
             f"-> AI双轨输入={len(selected_for_ai)} "
-            f"[{regime} {first_track}优先] (Trend={len(trend_selected)}/{trend_quota}, Accum={len(accum_selected)}/{accum_quota}, 总上限{total_cap}) "
-            f"[L4命中{hit_selected_count}+L3补充{max(l3_only_count, 0)}]"
+            f"[{regime} 配额 Trend={trend_quota}/Accum={accum_quota}, 总上限{total_cap}] "
+            f"[Markup优先{len([c for c in selected_for_ai if c in markup_symbols])} | L4命中{hit_selected_count}]"
         ),
         f"**Top 行业**: {', '.join(metrics['top_sectors']) if metrics['top_sectors'] else '无'}",
         "",
-        f"**AI输入通道标签分布**: 主升{channel_counts['主升通道']} | 潜伏{channel_counts['潜伏通道']} | 吸筹{channel_counts['吸筹通道']} | 地量{channel_counts['地量蓄势']} | 护盘{channel_counts['暗中护盘']} | 点火{channel_counts['点火破局']}",
+        f"**AI输入质量**: 最高优先级{sum(1 for c in selected_for_ai if c in markup_symbols or c in sos_hit_set or c in spring_hit_set)} | Markup{len([c for c in selected_for_ai if c in markup_symbols])} | 通道: {' | '.join(f'{k}{channel_counts[k]}' for k in ['主升通道', '潜伏通道', '吸筹通道', '地量蓄势', '暗中护盘', '点火破局'] if channel_counts[k] > 0)}",
     ]
 
     def _append_ai_section(lines_obj: list[str], section_title: str, codes: list[str]) -> None:
@@ -1485,12 +1545,12 @@ def run(webhook_url: str) -> tuple[bool, list[dict], dict]:
 
     _append_ai_section(
         lines,
-        f"**AI输入·Trend轨（右侧主升，优先 SOS，配额 {trend_quota}）**",
+        f"**AI输入·Trend轨（右侧主升，优先 SOS + Markup）**",
         trend_selected,
     )
     _append_ai_section(
         lines,
-        f"**AI输入·Accum轨（左侧潜伏，优先 Spring/LPS，配额 {accum_quota}）**",
+        f"**AI输入·Accum轨（左侧潜伏，优先 Spring/LPS + Accum_C）**",
         accum_selected,
     )
 
@@ -1498,13 +1558,11 @@ def run(webhook_url: str) -> tuple[bool, list[dict], dict]:
         lines.extend(
             [
                 "",
-                "**为什么没命中（L4触发=0）**",
-                f"• SOS点火={int(by_trigger.get('sos', 0))}, "
-                f"Spring={int(by_trigger.get('spring', 0))}, "
-                f"LPS={int(by_trigger.get('lps', 0))}, "
-                f"EVR={int(by_trigger.get('evr', 0))}",
-                "• 当前候选停留在威科夫初期（或通道内），尚未出现日线级别的 SOS/Spring/LPS/EVR 扳机信号。",
-                "• AI 输入采用双轨制：Trend 右侧进攻 + Accum 左侧潜伏；本轮两轨均无可入选标的。",
+                "**为什么没候选**",
+                f"• 触发信号: SOS={int(by_trigger.get('sos', 0))}, Spring={int(by_trigger.get('spring', 0))}, LPS={int(by_trigger.get('lps', 0))}, EVR={int(by_trigger.get('evr', 0))}",
+                f"• 阶段分布: Markup={markup_count}, Accum_A={accum_a_count}, Accum_B={accum_b_count}, Accum_C={accum_c_count}",
+                f"• 水温判断: {regime} | 当前配额: Trend={trend_quota}, Accum={accum_quota}, 总上限={total_cap}",
+                "• 分析：候选股票尚未达到日线级别的威科夫触发信号（SOS/Spring/LPS）或阶段转折特征。" if total_cap > 0 else "• 当前大盘水温，AI配额已关闭（total_cap=0）。",
             ]
         )
 

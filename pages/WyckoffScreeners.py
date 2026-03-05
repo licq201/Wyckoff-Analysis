@@ -24,7 +24,7 @@ from integrations.fetch_a_share_csv import (
     get_stocks_by_board,
     _normalize_symbols,
 )
-from integrations.data_source import fetch_index_hist, fetch_sector_map, fetch_market_cap_map
+from integrations.data_source import fetch_sector_map, fetch_market_cap_map
 from app.navigation import show_right_nav
 
 _CACHE_DIR = os.path.abspath(
@@ -184,13 +184,8 @@ with content_col:
             market_cap_map = fetch_market_cap_map()
             name_map = _stock_name_map()
 
-        # 大盘基准
+        # 大盘基准：web 端不拉取，直接传 None（避免额外网络请求）
         bench_df = None
-        with st.spinner("加载大盘基准..."):
-            try:
-                bench_df = fetch_index_hist("000001", start_s, end_s)
-            except Exception as exc:
-                st.warning(f"大盘基准加载失败: {exc}")
 
         # 并发拉取日线
         progress = st.progress(0)
