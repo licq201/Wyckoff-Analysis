@@ -553,20 +553,19 @@ def layer2_strength_detailed(
             accum_ok = accum_low_ok and accum_range_ok and accum_vol_ok and accum_ma_ok
 
         # 地量蓄势通道（Dry Volume Channel）
-        # 低位区 + 近 N 日内出现了近 60 日最低级别的单日成交量 → 卖压完全枯竭
+        # 低位区 + 近 N 日内出现了年内最低级别的单日成交量 → 卖压完全枯竭
         dry_vol_ok = False
-        if cfg.enable_dry_vol_channel and len(df_sorted) >= 60:
+        if cfg.enable_dry_vol_channel and len(df_sorted) >= cfg.dry_vol_ref_window:
             vol = pd.to_numeric(df_sorted.get("volume"), errors="coerce")
             _c_dv = close
-            # 改用近 60 日而不是年内（cfg.dry_vol_ref_window）
-            lookback_dv = 60
+            lookback_dv = max(int(cfg.dry_vol_ref_window), 2)
             period_low_dv = float(_c_dv.tail(lookback_dv).min())
             if (
                 period_low_dv > 0
                 and float(last_close) <= period_low_dv * (1.0 + cfg.dry_vol_price_from_low_max)
             ):
                 ref_vol = vol.tail(lookback_dv)
-                if len(ref_vol.dropna()) >= 30:
+                if len(ref_vol.dropna()) >= 50:
                     vol_threshold = float(np.quantile(
                         ref_vol.dropna().values, cfg.dry_vol_quantile
                     ))
