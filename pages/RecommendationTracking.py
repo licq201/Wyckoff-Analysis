@@ -1,0 +1,119 @@
+# -*- coding: utf-8 -*-
+"""推荐跟踪页面。"""
+import os
+import sys
+import pandas as pd
+import streamlit as st
+
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from app.layout import setup_page
+from app.navigation import show_right_nav
+from app.ui_helpers import show_page_loading
+from integrations.supabase_recommendation import load_recommendation_tracking
+
+setup_page(page_title="推荐跟踪", page_icon="🎯")
+
+def _format_pct(val):
+    if val is None: return "-"
+    color = "red" if val > 0 else "green" if val < 0 else "gray"
+    return f":{color}[{val:+.2f}%]"
+
+content_col = show_right_nav()
+
+with content_col:
+    st.title("🎯 推荐跟踪")
+    st.markdown("记录每日定时任务生成的威科夫推荐股票，并跟踪其后续的表现。数据在每日定时任务后自动刷新。")
+
+    # 1. 加载数据
+    loading = show_page_loading(title="正在拉取数据...", subtitle="从数据库加载推荐历史")
+    try:
+        raw_data = load_recommendation_tracking(limit=2000)
+    finally:
+        loading.empty()
+
+    if not raw_data:
+        st.info("目前暂无推荐跟踪数据，请等待下一次定时任务运行。")
+        st.stop()
+
+    # 2. 转换数据为 DataFrame 并处理展示逻辑
+    df = pd.DataFrame(raw_data)
+    
+    # 格式化日期 (INT YYYYMMDD -> YYYY-MM-DD str)
+    df['recommend_date_str'] = df['recommend_date'].apply(lambda x: f"{str(x)[:4]}-{str(x)[4:6]}-{str(x)[6:]}")
+    
+    # 格式化代码 (INT -> 000001 str)
+    df['display_code'] = df['code'].apply(lambda x: f"{x:06d}")
+
+    # 3. 统计指标 (KPIs)
+    st.markdown("### 📊 表现摘要")
+    col1, col2, col3, col4 = st.columns(4)
+    avg_change = df['change_pct'].mean()
+    max_change = df['change_pct'].max()
+    pos_count = len(df[df['change_pct'] > 0])
+    win_rate = (pos_count / len(df)) * 100 if len(df) > 0 else 0
+
+    col1.metric("总推荐数", f"{len(df)} 支")
+    col2.metric("平均表现", f"{avg_change:+.2f}%")
+    col3.metric("最高涨幅", f"{max_change:+.2f}%")
+    col4.metric("胜率", f"{win_rate:.1f}%")
+
+    st.divider()
+
+    # 4. 搜索与排序增强
+    st.markdown("### 🔍 筛选与搜索")
+    search_col, sort_col, order_col = st.columns([2, 1, 1])
+    
+    with search_col:
+        search_query = st.text_input("搜索代码或名字", placeholder="输入 000001 或 平安银行...", key="rec_search")
+    
+    with sort_col:
+        sort_by = st.selectbox("排序字段", options=["推荐日期", "涨跌幅", "代码"], index=0)
+    
+    with order_col:
+        sort_order = st.radio("顺序", options=["降序", "升序"], horizontal=True)
+
+    # 处理筛选
+    filtered_df = df.copy()
+    if search_query:
+        # 支持代码或名字搜索
+        filtered_df = filtered_df[
+            (filtered_df['display_code'].str.contains(search_query)) | 
+            (filtered_df['name'].str.contains(search_query))
+        ]
+
+    # 处理排序
+    sort_map = {"推荐日期": "recommend_date", "涨跌幅": "change_pct", "代码": "code"}
+    filtered_df = filtered_df.sort_values(
+        by=sort_map[sort_by], 
+        ascending=(sort_order == "升序")
+    )
+
+    # 5. 结果展示
+    # 构建最终展示的列表
+    display_df = filtered_df[[
+        'recommend_date_str', 'display_code', 'name', 
+        'recommend_reason', 'initial_price', 'current_price', 'change_pct'
+    ]].copy()
+
+    display_df.columns = [
+        "推荐日期", "代码", "名称", "推荐原因", "加入价", "当前价", "累计涨跌幅"
+    ]
+
+    # 使用 dataframe 渲染，增加一些样式建议
+    st.dataframe(
+        display_df.style.format({
+            "加入价": "{:.2f}",
+            "当前价": "{:.2f}",
+            "累计涨跌幅": "{:+.2f}%"
+        }).map(
+            lambda v: "color: red;" if isinstance(v, str) and "+" in v else ("color: green;" if isinstance(v, str) and "-" in v else ""),
+            subset=["累计涨跌幅"]
+        ),
+        use_container_width=True,
+        hide_index=True,
+        height=600
+    )
+
+    if st.button("🔄 手动刷新数据"):
+        st.rerun()

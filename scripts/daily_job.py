@@ -19,6 +19,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from integrations.fetch_a_share_csv import _resolve_trading_window
 from integrations.supabase_market_signal import upsert_market_signal_daily
+from integrations.supabase_recommendation import upsert_recommendations, sync_all_tracking_prices
 from utils.trading_clock import resolve_end_calendar_day
 
 TZ = ZoneInfo("Asia/Shanghai")
@@ -188,6 +189,15 @@ def main() -> int:
         has_blocking_failure = True
     elif benchmark_context:
         _persist_benchmark_context(benchmark_context, logs_path)
+        
+    # 新增：存入推荐跟踪表
+    if step2_ok and symbols_info:
+        try:
+            trade_date_int = int(_latest_trade_date_str().replace("-", ""))
+            rec_ok = upsert_recommendations(trade_date_int, symbols_info)
+            _log(f"推荐记录入库: ok={rec_ok}, count={len(symbols_info)}", logs_path)
+        except Exception as e:
+            _log(f"推荐记录入库失败: {e}", logs_path)
 
     # 阶段 2：批量研报（可降级：失败不影响 Funnel 成功）
     step3_ok = True
@@ -323,6 +333,14 @@ def main() -> int:
                 f"ok={step4_ok}, reason={step4_reason}, elapsed={elapsed4:.1f}s, err={step4_err}",
                 logs_path,
             )
+
+    # 新增：定时任务最后，同步所有跟踪股票的实时价格
+    _log("开始同步所有推荐记录的实时价格...", logs_path)
+    try:
+        updated_n = sync_all_tracking_prices()
+        _log(f"实时价格同步完成，共更新 {updated_n} 条记录", logs_path)
+    except Exception as e:
+        _log(f"实时价格同步失败: {e}", logs_path)
 
     # 汇总
     total_elapsed = sum(s.get("elapsed_s", 0) for s in summary)

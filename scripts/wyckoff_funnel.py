@@ -1811,6 +1811,7 @@ def run(
             "priority_rank": idx + 1,
             "selection_source": _selection_source(c),
             "selection_is_fill": _selection_source(c) == "l3_fill",
+            "initial_price": float(all_df_map.get(c).get("close").iloc[-1]) if all_df_map.get(c) is not None else 0.0,
             "industry": str(sector_map.get(c, "") or "未知行业"),
             "sector_state_code": str(
                 (sector_rotation_map.get(str(sector_map.get(c, "") or "未知行业"), {}) or {}).get("state", "")
