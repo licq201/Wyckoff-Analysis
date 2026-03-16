@@ -38,6 +38,19 @@ with content_col:
 
     # 2. 转换数据为 DataFrame 并处理展示逻辑
     df = pd.DataFrame(raw_data)
+    if "is_ai_recommended" not in df.columns:
+        df["is_ai_recommended"] = False
+    if "funnel_score" not in df.columns:
+        df["funnel_score"] = pd.NA
+    df["is_ai_recommended"] = (
+        df["is_ai_recommended"]
+        .apply(lambda x: str(x).strip().lower() in {"1", "true", "t", "yes", "y"})
+        .astype(bool)
+    )
+    df["funnel_score"] = pd.to_numeric(df["funnel_score"], errors="coerce")
+    df["initial_price"] = pd.to_numeric(df.get("initial_price"), errors="coerce")
+    df["current_price"] = pd.to_numeric(df.get("current_price"), errors="coerce")
+    df["change_pct"] = pd.to_numeric(df.get("change_pct"), errors="coerce")
     
     # 格式化日期 (INT YYYYMMDD -> YYYY-MM-DD str)
     df['recommend_date_str'] = df['recommend_date'].apply(lambda x: f"{str(x)[:4]}-{str(x)[4:6]}-{str(x)[6:]}")
@@ -50,25 +63,27 @@ with content_col:
     col1, col2, col3, col4 = st.columns(4)
     avg_change = df['change_pct'].mean()
     max_change = df['change_pct'].max()
-    pos_count = len(df[df['change_pct'] > 0])
-    win_rate = (pos_count / len(df)) * 100 if len(df) > 0 else 0
+    ai_count = int(df["is_ai_recommended"].sum())
 
     col1.metric("总推荐数", f"{len(df)} 支")
     col2.metric("平均表现", f"{avg_change:+.2f}%")
     col3.metric("最高涨幅", f"{max_change:+.2f}%")
-    col4.metric("胜率", f"{win_rate:.1f}%")
+    col4.metric("AI推荐数", f"{ai_count} 支")
 
     st.divider()
 
     # 4. 搜索与排序增强
     st.markdown("### 🔍 筛选与搜索")
-    search_col, sort_col, order_col = st.columns([2, 1, 1])
+    search_col, ai_col, sort_col, order_col = st.columns([2, 1, 1, 1])
     
     with search_col:
         search_query = st.text_input("搜索代码或名字", placeholder="输入 000001 或 平安银行...", key="rec_search")
+
+    with ai_col:
+        only_ai = st.checkbox("只看AI推荐", value=False, key="rec_only_ai")
     
     with sort_col:
-        sort_by = st.selectbox("排序字段", options=["推荐日期", "涨跌幅", "代码"], index=0)
+        sort_by = st.selectbox("排序字段", options=["推荐日期", "涨跌幅", "分值", "代码"], index=0)
     
     with order_col:
         sort_order = st.radio("顺序", options=["降序", "升序"], horizontal=True)
@@ -78,12 +93,14 @@ with content_col:
     if search_query:
         # 支持代码或名字搜索
         filtered_df = filtered_df[
-            (filtered_df['display_code'].str.contains(search_query)) | 
-            (filtered_df['name'].str.contains(search_query))
+            (filtered_df['display_code'].str.contains(search_query, na=False)) | 
+            (filtered_df['name'].astype(str).str.contains(search_query, na=False))
         ]
+    if only_ai:
+        filtered_df = filtered_df[filtered_df["is_ai_recommended"] == True]
 
     # 处理排序
-    sort_map = {"推荐日期": "recommend_date", "涨跌幅": "change_pct", "代码": "code"}
+    sort_map = {"推荐日期": "recommend_date", "涨跌幅": "change_pct", "分值": "funnel_score", "代码": "code"}
     filtered_df = filtered_df.sort_values(
         by=sort_map[sort_by], 
         ascending=(sort_order == "升序")
@@ -93,22 +110,27 @@ with content_col:
     # 构建最终展示的列表
     display_df = filtered_df[[
         'recommend_date_str', 'display_code', 'name', 
-        'recommend_reason', 'initial_price', 'current_price', 'change_pct'
+        'recommend_reason', 'is_ai_recommended', 'funnel_score', 'initial_price', 'current_price', 'change_pct'
     ]].copy()
+    display_df["is_ai_recommended"] = display_df["is_ai_recommended"].map(lambda x: "是" if bool(x) else "否")
 
     display_df.columns = [
-        "推荐日期", "代码", "名称", "推荐原因", "加入价", "当前价", "累计涨跌幅"
+        "推荐日期", "代码", "名称", "推荐原因", "AI推荐", "分值", "加入价", "当前价", "累计涨跌幅"
     ]
 
     # 使用 dataframe 渲染，增加一些样式建议
     st.dataframe(
         display_df.style.format({
+            "分值": lambda v: "-" if pd.isna(v) else f"{float(v):.2f}",
             "加入价": "{:.2f}",
             "当前价": "{:.2f}",
             "累计涨跌幅": "{:+.2f}%"
         }).map(
             lambda v: "color: red;" if isinstance(v, str) and "+" in v else ("color: green;" if isinstance(v, str) and "-" in v else ""),
             subset=["累计涨跌幅"]
+        ).map(
+            lambda v: "color: #16a34a; font-weight: 700;" if v == "是" else "color: #6b7280;",
+            subset=["AI推荐"]
         ),
         use_container_width=True,
         hide_index=True,

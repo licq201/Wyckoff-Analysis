@@ -19,7 +19,11 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from integrations.fetch_a_share_csv import _resolve_trading_window
 from integrations.supabase_market_signal import upsert_market_signal_daily
-from integrations.supabase_recommendation import upsert_recommendations, sync_all_tracking_prices
+from integrations.supabase_recommendation import (
+    mark_ai_recommendations,
+    sync_all_tracking_prices,
+    upsert_recommendations,
+)
 from utils.trading_clock import resolve_end_calendar_day
 
 TZ = ZoneInfo("Asia/Shanghai")
@@ -164,6 +168,7 @@ def main() -> int:
     symbols_info: list[dict] = []
     benchmark_context: dict = {}
     step3_report_text = ""
+    recommend_trade_date_int: int | None = None
 
     _log("开始定时任务", logs_path)
 
@@ -193,9 +198,12 @@ def main() -> int:
     # 新增：存入推荐跟踪表
     if step2_ok and symbols_info:
         try:
-            trade_date_int = int(_latest_trade_date_str().replace("-", ""))
-            rec_ok = upsert_recommendations(trade_date_int, symbols_info)
-            _log(f"推荐记录入库: ok={rec_ok}, count={len(symbols_info)}", logs_path)
+            recommend_trade_date_int = int(_latest_trade_date_str().replace("-", ""))
+            rec_ok = upsert_recommendations(recommend_trade_date_int, symbols_info)
+            _log(
+                f"推荐记录入库: ok={rec_ok}, count={len(symbols_info)}, date={recommend_trade_date_int}",
+                logs_path,
+            )
         except Exception as e:
             _log(f"推荐记录入库失败: {e}", logs_path)
 
@@ -241,6 +249,19 @@ def main() -> int:
             f"阶段 2 批量研报: 可操作池代码={len(step3_operation_codes)} ({preview_codes})",
             logs_path,
         )
+        if recommend_trade_date_int is not None:
+            try:
+                ai_mark_ok = mark_ai_recommendations(
+                    recommend_date=recommend_trade_date_int,
+                    ai_codes=step3_operation_codes,
+                )
+                _log(
+                    "推荐记录AI标记: "
+                    f"ok={ai_mark_ok}, date={recommend_trade_date_int}, ai_count={len(step3_operation_codes)}",
+                    logs_path,
+                )
+            except Exception as e:
+                _log(f"推荐记录AI标记失败: {e}", logs_path)
     else:
         summary.append({"step": "批量研报", "ok": True, "err": None, "elapsed_s": 0, "output": "skipped (no symbols)"})
         _log("阶段 2 批量研报: 跳过（无筛选结果）", logs_path)

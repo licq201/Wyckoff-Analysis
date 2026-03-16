@@ -1254,6 +1254,17 @@ def run_funnel_job(
     exit_signals = layer5_exit_signals(l2_passed + markup_symbols, all_df_map, accum_stage_map, cfg)
 
     total_hits = sum(len(v) for v in triggers.values())
+    latest_close_map: dict[str, float] = {}
+    for sym, df in all_df_map.items():
+        try:
+            close_series = pd.to_numeric(df.get("close"), errors="coerce")
+            if close_series is None or close_series.empty:
+                continue
+            last_close = close_series.iloc[-1]
+            if pd.notna(last_close):
+                latest_close_map[str(sym).strip()] = float(last_close)
+        except Exception:
+            continue
     ranked_l3_symbols, l3_score_map = _rank_l3_candidates(
         l3_symbols=l3_passed,
         df_map=all_df_map,
@@ -1293,6 +1304,7 @@ def run_funnel_job(
         "total_hits": total_hits,
         "by_trigger": {k: len(v) for k, v in triggers.items()},
         "benchmark_context": benchmark_context,
+        "latest_close_map": latest_close_map,
         # 新增：阶段识别和退出信号
         "markup_symbols": markup_symbols,
         "accum_stage_map": accum_stage_map,
@@ -1337,6 +1349,7 @@ def run(
     benchmark_context = metrics.get("benchmark_context", {}) or {}
     name_map = _stock_name_map()
     sector_map = fetch_sector_map()
+    latest_close_map = metrics.get("latest_close_map", {}) or {}
 
     code_to_reasons: dict[str, list[str]] = {}
     code_to_best_score: dict[str, float] = {}
@@ -1490,6 +1503,7 @@ def run(
                 "priority_rank": idx + 1,
                 "selection_source": "l4_hit",
                 "selection_is_fill": False,
+                "initial_price": float(latest_close_map.get(c, 0.0) or 0.0),
                 "industry": str(sector_map.get(c, "") or "未知行业"),
                 "sector_state_code": str(
                     (sector_rotation_map.get(str(sector_map.get(c, "") or "未知行业"), {}) or {}).get("state", "")
@@ -1811,7 +1825,7 @@ def run(
             "priority_rank": idx + 1,
             "selection_source": _selection_source(c),
             "selection_is_fill": _selection_source(c) == "l3_fill",
-            "initial_price": float(all_df_map.get(c).get("close").iloc[-1]) if all_df_map.get(c) is not None else 0.0,
+            "initial_price": float(latest_close_map.get(c, 0.0) or 0.0),
             "industry": str(sector_map.get(c, "") or "未知行业"),
             "sector_state_code": str(
                 (sector_rotation_map.get(str(sector_map.get(c, "") or "未知行业"), {}) or {}).get("state", "")
