@@ -87,33 +87,50 @@ with content_col:
         only_ai = st.checkbox("只看AI推荐", value=False, key="rec_only_ai")
     
     with sort_col:
-        sort_by = st.selectbox("排序字段", options=["推荐日期", "涨跌幅", "分值", "代码"], index=0)
-    
+        sort_by = st.selectbox(
+            "排序",
+            options=["默认（涨幅→推荐次数→AI→日期→分值→现价）", "推荐日期", "涨跌幅", "分值", "代码"],
+            index=0,
+        )
     with order_col:
         sort_order = st.radio("顺序", options=["降序", "升序"], horizontal=True)
 
-    # 处理筛选
+    # 筛选
     filtered_df = df.copy()
     if search_query:
-        # 支持代码或名字搜索
         filtered_df = filtered_df[
-            (filtered_df['display_code'].str.contains(search_query, na=False)) | 
-            (filtered_df['name'].astype(str).str.contains(search_query, na=False))
+            (filtered_df["display_code"].str.contains(search_query, na=False))
+            | (filtered_df["name"].astype(str).str.contains(search_query, na=False))
         ]
     if only_ai:
         filtered_df = filtered_df[filtered_df["is_ai_recommended"] == True]
 
-    # 处理排序
-    sort_map = {
-        "推荐日期": "recommend_date",
-        "涨跌幅": "change_pct",
-        "分值": "funnel_score",
-        "代码": "code",
-    }
-    filtered_df = filtered_df.sort_values(
-        by=sort_map[sort_by], 
-        ascending=(sort_order == "升序")
-    )
+    # 排序：默认多级（涨幅高→低，同涨幅推荐次数高→低，同则 AI 在上，同则日期新→旧，同则分值高→低，同则现价高→低）
+    if sort_by == "默认（涨幅→推荐次数→AI→日期→分值→现价）":
+        filtered_df = filtered_df.sort_values(
+            by=[
+                "change_pct",
+                "recommend_count",
+                "is_ai_recommended",
+                "recommend_date",
+                "funnel_score",
+                "current_price",
+            ],
+            ascending=[False, False, False, False, False, False],
+            na_position="last",
+        )
+    else:
+        sort_map = {
+            "推荐日期": "recommend_date",
+            "涨跌幅": "change_pct",
+            "分值": "funnel_score",
+            "代码": "code",
+        }
+        filtered_df = filtered_df.sort_values(
+            by=sort_map[sort_by],
+            ascending=(sort_order == "升序"),
+            na_position="last",
+        )
 
     # 5. 结果展示
     # 构建最终展示的列表
