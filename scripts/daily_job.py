@@ -5,7 +5,7 @@
 配置来源：仅读取环境变量（GitHub Secrets），与 Streamlit 用户配置（Supabase）完全独立。
 环境变量：FEISHU_WEBHOOK_URL, WECOM_WEBHOOK_URL(可选), DINGTALK_WEBHOOK_URL(可选),
 DEFAULT_LLM_PROVIDER(可选，默认 gemini), GEMINI_API_KEY, GEMINI_MODEL,
-OPENAI_API_KEY, OPENAI_MODEL(可选), 以及其它厂商 *_API_KEY/*_MODEL,
+OPENAI_API_KEY, OPENAI_MODEL(可选), 以及其它厂商 *_API_KEY/*_MODEL/*_BASE_URL,
 SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY(可选), SUPABASE_USER_ID,
 TG_BOT_TOKEN, TG_CHAT_ID, MY_PORTFOLIO_STATE(可选兜底)
 """
@@ -21,6 +21,7 @@ from zoneinfo import ZoneInfo
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from integrations.fetch_a_share_csv import _resolve_trading_window
+from integrations.llm_client import OPENAI_COMPATIBLE_BASE_URLS
 from integrations.supabase_market_signal import upsert_market_signal_daily
 from integrations.supabase_recommendation import (
     mark_ai_recommendations,
@@ -164,6 +165,12 @@ def main() -> int:
     api_key = (os.getenv(f"{provider.upper()}_API_KEY") or os.getenv("GEMINI_API_KEY") or "").strip()
     model_env_key = f"{provider.upper()}_MODEL"
     model = (os.getenv(model_env_key) or os.getenv("GEMINI_MODEL", "gemini-3.1-flash-lite-preview")).strip() or "gemini-3.1-flash-lite-preview"
+    base_url_env_key = f"{provider.upper()}_BASE_URL"
+    llm_base_url = (
+        os.getenv(base_url_env_key)
+        or OPENAI_COMPATIBLE_BASE_URLS.get(provider, "")
+        or ""
+    ).strip()
     step3_skip_llm = os.getenv("STEP3_SKIP_LLM", "").strip().lower() in {"1", "true", "yes", "on"}
     skip_step4 = os.getenv("DAILY_JOB_SKIP_STEP4", "").strip().lower() in {"1", "true", "yes", "on"}
 
@@ -187,6 +194,9 @@ def main() -> int:
     if args.dry_run:
         _log("--dry-run: 配置校验通过，退出", logs_path)
         return 0
+
+    if provider in OPENAI_COMPATIBLE_BASE_URLS:
+        _log(f"LLM base_url: {llm_base_url or '(empty)'} (env={base_url_env_key})", logs_path)
 
     # 数据源口径在 integrations/data_source.py 中固定为：
     # tushare 优先（前复权 qfq），失败再回退到其它可用源。
@@ -259,6 +269,7 @@ def main() -> int:
                 model,
                 benchmark_context=benchmark_context,
                 provider=provider,
+                llm_base_url=llm_base_url,
                 wecom_webhook=wecom_webhook,
                 dingtalk_webhook=dingtalk_webhook,
             )

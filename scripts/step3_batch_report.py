@@ -233,6 +233,7 @@ def _repair_report_structure(
     selected_codes: list[str],
     *,
     provider: str = "gemini",
+    llm_base_url: str = "",
 ) -> str:
     """
     当模型未给出可识别的分层结构时，做一次结构修复重写。
@@ -268,6 +269,7 @@ def _repair_report_structure(
             api_key=api_key,
             system_prompt=repair_system,
             user_message=repair_user,
+            base_url=llm_base_url or None,
             timeout=180,
             max_output_tokens=STEP3_MAX_OUTPUT_TOKENS,
         )
@@ -1016,6 +1018,7 @@ def _call_track_report(
     selected_codes: list[str],
     selected_df: pd.DataFrame,
     provider: str = "gemini",
+    llm_base_url: str = "",
 ) -> tuple[bool, str, str]:
     report = ""
     used_model = ""
@@ -1031,6 +1034,7 @@ def _call_track_report(
                 api_key=api_key,
                 system_prompt=system_prompt,
                 user_message=user_message,
+                base_url=llm_base_url or None,
                 timeout=300,
                 max_output_tokens=STEP3_MAX_OUTPUT_TOKENS,
             )
@@ -1049,6 +1053,7 @@ def _call_track_report(
             api_key=api_key,
             selected_codes=selected_codes,
             provider=provider,
+            llm_base_url=llm_base_url,
         )
     if not _has_required_sections(report):
         print(f"[step3] {track} 轨结构修复后仍缺少关键章节，追加系统兜底分层")
@@ -1223,6 +1228,7 @@ def run(
     *,
     notify: bool = True,
     provider: str = "gemini",
+    llm_base_url: str = "",
     wecom_webhook: str = "",
     dingtalk_webhook: str = "",
 ) -> tuple[bool, str, str]:
@@ -1756,6 +1762,7 @@ def run(
             selected_codes=selected_codes,
             selected_df=selected_df,
             provider=provider,
+            llm_base_url=llm_base_url,
         )
         if not ok:
             return (False, "llm_failed", "")
@@ -1893,6 +1900,7 @@ def run(
             selected_codes=selected_codes_by_track.get(track, []),
             selected_df=df_by_track.get(track, selected_df.iloc[0:0].copy()),
             provider=provider,
+            llm_base_url=llm_base_url,
         )
         if not ok:
             return (False, "llm_failed", "")
