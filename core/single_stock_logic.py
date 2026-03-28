@@ -142,6 +142,80 @@ def extract_python_code(text: str) -> str | None:
     return None
 
 
+def _strip_code_blocks_for_ui(text: str) -> str:
+    """
+    页面展示时移除模型返回的代码块，避免在前端暴露 Python 实现细节。
+    """
+    if not text:
+        return ""
+    cleaned = re.sub(r"```(?:python)?\s*.*?```", "", text, flags=re.DOTALL | re.IGNORECASE)
+    cleaned = re.sub(
+        r"(?im)^\s{0,3}#{0,6}\s*威科夫.*(?:绘图代码|标注图绘制代码).*$\n?",
+        "",
+        cleaned,
+    )
+    cleaned = re.sub(r"\n{3,}", "\n\n", cleaned).strip()
+    return cleaned
+
+
+def _prepare_plot_dataframe(df_hist: pd.DataFrame) -> pd.DataFrame:
+    """
+    将多来源历史数据统一为绘图输入字段：
+    date/open/high/low/close/volume（缺失列尽量补齐）。
+    """
+    if df_hist is None or df_hist.empty:
+        raise ValueError("历史数据为空，无法生成结构图")
+
+    src = df_hist.copy()
+    col_map = {str(c).strip().lower(): c for c in src.columns}
+
+    def _pick(*candidates: str):
+        for c in candidates:
+            hit = col_map.get(c.lower())
+            if hit is not None:
+                return hit
+        return None
+
+    date_col = _pick("date", "trade_date", "datetime", "dt", "日期")
+    close_col = _pick("close", "close_price", "last", "收盘")
+    open_col = _pick("open", "open_price", "开盘")
+    high_col = _pick("high", "high_price", "最高")
+    low_col = _pick("low", "low_price", "最低")
+    vol_col = _pick("volume", "vol", "成交量")
+
+    if date_col is None:
+        raise ValueError("缺少 date 列")
+    if close_col is None:
+        raise ValueError("缺少 close 列")
+
+    out = pd.DataFrame()
+    date_s = src[date_col].astype(str).str.replace(r"\.0$", "", regex=True).str.strip()
+    out["date"] = pd.to_datetime(date_s, errors="coerce")
+    out["close"] = pd.to_numeric(src[close_col], errors="coerce")
+
+    if open_col is not None:
+        out["open"] = pd.to_numeric(src[open_col], errors="coerce")
+    else:
+        out["open"] = out["close"]
+    if high_col is not None:
+        out["high"] = pd.to_numeric(src[high_col], errors="coerce")
+    else:
+        out["high"] = out[["open", "close"]].max(axis=1)
+    if low_col is not None:
+        out["low"] = pd.to_numeric(src[low_col], errors="coerce")
+    else:
+        out["low"] = out[["open", "close"]].min(axis=1)
+    if vol_col is not None:
+        out["volume"] = pd.to_numeric(src[vol_col], errors="coerce")
+    else:
+        out["volume"] = 0.0
+
+    out = out.dropna(subset=["date", "close"]).sort_values("date").reset_index(drop=True)
+    if out.empty:
+        raise ValueError("历史数据为空，无法生成结构图")
+    return out
+
+
 def _validate_plot_code(code_block: str) -> tuple[bool, str]:
     try:
         tree = ast.parse(code_block)
@@ -201,9 +275,7 @@ def _run_plot_code_safely(code_block: str, df_hist: pd.DataFrame):
     if not callable(create_plot):
         raise ValueError("未找到可调用的 create_plot(df) 函数")
 
-    df_plot = df_hist.copy()
-    if "date" in df_plot.columns:
-        df_plot["date"] = pd.to_datetime(df_plot["date"], errors="coerce")
+    df_plot = _prepare_plot_dataframe(df_hist)
 
     fig = create_plot(df_plot)
     if fig is None:
@@ -218,27 +290,7 @@ def _build_safe_structure_plot(df_hist: pd.DataFrame, symbol: str, name: str):
     在禁用 LLM 代码执行时，使用固定模板输出一张可读结构图。
     仅依赖历史行情数据，不执行任何模型生成代码。
     """
-    if df_hist is None or df_hist.empty:
-        raise ValueError("历史数据为空，无法生成结构图")
-
-    df_plot = df_hist.copy()
-    if "date" not in df_plot.columns:
-        raise ValueError("缺少 date 列")
-    if "close" not in df_plot.columns:
-        raise ValueError("缺少 close 列")
-
-    df_plot["date"] = pd.to_datetime(df_plot["date"], errors="coerce")
-    df_plot["close"] = pd.to_numeric(df_plot["close"], errors="coerce")
-    if "open" in df_plot.columns:
-        df_plot["open"] = pd.to_numeric(df_plot["open"], errors="coerce")
-    if "volume" in df_plot.columns:
-        df_plot["volume"] = pd.to_numeric(df_plot["volume"], errors="coerce")
-    else:
-        df_plot["volume"] = 0.0
-
-    df_plot = df_plot.dropna(subset=["date", "close"]).sort_values("date").reset_index(drop=True)
-    if df_plot.empty:
-        raise ValueError("历史数据为空，无法生成结构图")
+    df_plot = _prepare_plot_dataframe(df_hist)
 
     # 仅展示最近 240 根，避免图形过于拥挤。
     if len(df_plot) > 240:
@@ -277,7 +329,8 @@ def _build_safe_structure_plot(df_hist: pd.DataFrame, symbol: str, name: str):
     ax_price.legend(loc="upper left", fontsize=9, frameon=False)
     ax_price.set_ylabel("Price")
 
-    if "open" in df_plot.columns and df_plot["open"].notna().any():
+    has_real_open = "open" in df_hist.columns or "open_price" in df_hist.columns
+    if has_real_open and df_plot["open"].notna().any():
         vol_colors = [
             "#d14343" if c >= o else "#1f8f55"
             for c, o in zip(df_plot["close"], df_plot["open"])
@@ -385,8 +438,12 @@ def _run_analysis(symbol, image_file, provider, model, api_key, *, base_url: str
             elif sig.get("signal") == "distribution_warning":
                 exit_info = f"⚠ **Exit提醒**: {sig.get('reason', '检测到Distribution阶段迹象')}\n"
 
-        # 转换为 CSV 文本
-        csv_text = df_hist.to_csv(index=False, encoding="utf-8-sig")
+        # 转换为 CSV 文本：优先使用标准字段，减少模型绘图代码字段不一致。
+        try:
+            csv_df = _prepare_plot_dataframe(df_hist)
+        except Exception:
+            csv_df = df_hist.copy()
+        csv_text = csv_df.to_csv(index=False, encoding="utf-8-sig")
 
         # 准备 Prompt
         current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -427,8 +484,9 @@ def _run_analysis(symbol, image_file, provider, model, api_key, *, base_url: str
         loading.empty()
 
         code_block = extract_python_code(response_text)
+        report_text = _strip_code_blocks_for_ui(response_text)
         st.markdown("### 📝 威科夫大师研报")
-        st.markdown(response_text)
+        st.markdown(report_text or "（研报正文已生成）")
 
         try:
             from utils.notify import send_all_webhooks
@@ -460,8 +518,22 @@ def _run_analysis(symbol, image_file, provider, model, api_key, *, base_url: str
                     fig = _run_plot_code_safely(code_block, df_hist)
                     st.pyplot(fig)
                 except Exception as e:
-                    st.error(f"绘图代码执行失败：{e}")
-                    st.expander("查看生成代码").code(code_block, language="python")
+                    st.warning(f"模型绘图执行失败，已回退到系统结构图：{e}")
+                    try:
+                        fig = _build_safe_structure_plot(df_hist, symbol, name)
+                        st.pyplot(fig)
+                    except Exception:
+                        st.error("结构图生成失败。")
+                        st.expander("错误详情").text(traceback.format_exc())
+        else:
+            st.markdown("### 📊 结构标注图")
+            st.info("未检测到模型绘图代码，已展示系统自动生成的结构图。")
+            with st.spinner("正在生成结构图..."):
+                try:
+                    fig = _build_safe_structure_plot(df_hist, symbol, name)
+                    st.pyplot(fig)
+                except Exception as e:
+                    st.error(f"结构图生成失败：{e}")
                     st.expander("错误详情").text(traceback.format_exc())
 
     except Exception as e:
