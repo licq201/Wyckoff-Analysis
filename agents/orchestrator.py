@@ -62,10 +62,12 @@ class OrchestratorAgent:
         tg_bot_token: str = "",
         tg_chat_id: str = "",
         # Global
+        no_llm: bool = False,
         skip_step4: bool = False,
         max_retries: int = 2,
     ):
         self.max_retries = max_retries
+        self.no_llm = no_llm
         self.skip_step4 = skip_step4
 
         self.screener = ScreenerAgent(
@@ -119,7 +121,8 @@ class OrchestratorAgent:
             or ""
         ).strip()
 
-        skip_step4 = os.getenv("DAILY_JOB_SKIP_STEP4", "").strip().lower() in {
+        no_llm = not bool(api_key)
+        skip_step4 = no_llm or os.getenv("DAILY_JOB_SKIP_STEP4", "").strip().lower() in {
             "1", "true", "yes", "on",
         }
 
@@ -129,6 +132,7 @@ class OrchestratorAgent:
 
         return cls(
             webhook_url=os.getenv("FEISHU_WEBHOOK_URL", "").strip(),
+            no_llm=no_llm,
             api_key=api_key,
             model=model,
             provider=provider,
@@ -215,7 +219,18 @@ class OrchestratorAgent:
         # Stage 3: Analyst (LLM 三阵营研报)
         # ------------------------------------------------------------------
         screen = ctx.get("screener")
-        if screen and screen.ok and screen.payload and screen.payload.candidates:
+        if self.no_llm:
+            logger.info("noLLM mode: skipping analyst (no API Key)")
+            skip_result = AgentResult(
+                agent_name="analyst",
+                status=PipelineStatus.COMPLETED,
+                payload=None,
+            )
+            ctx["analyst"] = skip_result
+            checkpoint = skip_result.to_checkpoint_dict()
+            stages_executed.append(checkpoint)
+            _fire_done(checkpoint)
+        elif screen and screen.ok and screen.payload and screen.payload.candidates:
             _fire_start(self.analyst.name)
             result = self._run_stage(self.analyst, ctx)
             checkpoint = result.to_checkpoint_dict()

@@ -242,9 +242,10 @@ def _build_orchestrator_from_payload(
     # 解析 LLM 凭证
     provider, api_key, model, base_url = _resolve_model_credentials(payload)
 
+    no_llm = not bool(api_key)
     webhook_url = str(payload.get("webhook_url", "") or "").strip()
     notify = bool(webhook_url)
-    skip_step4 = bool(payload.get("skip_step4", False))
+    skip_step4 = bool(payload.get("skip_step4", False)) or no_llm
 
     # Portfolio 配置
     portfolio_id = str(payload.get("portfolio_id", "") or "").strip()
@@ -262,6 +263,7 @@ def _build_orchestrator_from_payload(
     return OrchestratorAgent(
         webhook_url=webhook_url,
         notify=notify,
+        no_llm=no_llm,
         api_key=api_key,
         model=model,
         provider=provider,

@@ -198,8 +198,8 @@ def _resolve_model_credentials(payload: dict[str, Any]) -> tuple[str, str, str, 
     if not base_url:
         base_url = str(OPENAI_COMPATIBLE_BASE_URLS.get(provider, "") or "").strip()
     if not api_key:
-        raise ValueError(f"未找到可用的 {provider} API Key（用户配置与环境变量均为空）")
-    if not model:
+        logger.warning("[resolve_credentials] 未找到可用的 %s API Key，将以 noLLM 模式运行", provider)
+    if not model and api_key:
         raise ValueError(f"未找到可用的 {provider} 模型名（payload / 用户配置 / 环境变量均为空）")
     return provider, api_key, model, base_url
 

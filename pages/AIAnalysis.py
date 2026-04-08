@@ -221,7 +221,7 @@ with content_col:
             _remaining = max(_limit - _used, 0)
             st.caption(f"等级：**{_tier_info['label']}** · 今日剩余额度：**{_remaining}/{_limit}** 次")
 
-        # 模型配置
+        # 模型配置（API Key 统一在设置页管理，此处仅选供应商和模型）
         with st.expander("模型配置", expanded=False):
             col_prov, col_mdl = st.columns(2)
             with col_prov:
@@ -245,17 +245,9 @@ with content_col:
                         value=get_provider_credentials(p_provider)[1],
                         key="pipeline_model_other",
                     )
-            p_api_key, p_default_model, p_base_url = get_provider_credentials(p_provider)
+            _, p_default_model, p_base_url = get_provider_credentials(p_provider)
             if not p_model:
                 p_model = p_default_model
-            p_api_key_input = st.text_input(
-                f"{PROVIDER_LABELS.get(p_provider, p_provider)} API Key",
-                value=p_api_key,
-                type="password",
-                key="pipeline_api_key",
-            )
-            if p_api_key_input:
-                p_api_key = p_api_key_input
 
         # 高级配置
         with st.expander("高级配置"):
@@ -273,29 +265,21 @@ with content_col:
                     key="pipeline_skip_step4",
                 )
 
+        # noLLM 检测：没有 API Key 时自动降级
+        _no_llm = not bool(
+            st.session_state.get(f"{p_provider}_api_key") or ""
+        ).strip()
+        if _no_llm:
+            st.caption("⚡ 未检测到 API Key，将以 **noLLM 模式**运行（仅执行漏斗筛选 + 大盘环境 + 通知，跳过 AI 研报与持仓策略）。如需完整管线，请先在 **设置页** 保存对应供应商的 API Key。")
+
         # 提交 / 状态
         p_state = st.session_state.get(PIPELINE_STATE_KEY)
         p_running = _pipeline_is_running(p_state)
 
-        # 提前检查 key 是否可用（session_state 或 Supabase 或环境变量）
-        _has_key = bool(p_api_key)
-        if not _has_key:
-            try:
-                from integrations.supabase_portfolio import load_user_settings_admin
-                _chk_settings = load_user_settings_admin(_uid) or {}
-                _has_key = bool(str(_chk_settings.get(f"{p_provider}_api_key", "") or "").strip())
-            except Exception:
-                pass
-        if not _has_key:
-            import os as _os
-            _has_key = bool(_os.getenv(f"{p_provider.upper()}_API_KEY", "").strip())
-
         if p_running:
             st.button("🔄 管线运行中...", disabled=True, use_container_width=True)
         else:
-            if not _has_key:
-                st.warning(f"请配置 {PROVIDER_LABELS.get(p_provider, p_provider)} API Key（设置页保存或在模型配置中输入）。")
-            btn_disabled = (not _has_key) or (not _allowed)
+            btn_disabled = not _allowed
             if not _allowed:
                 st.warning(f"今日管线额度已用完（{_used}/{_limit}），明天再来。")
             if st.button("🚀 一键运行完整管线", type="primary", disabled=btn_disabled, use_container_width=True):
@@ -305,22 +289,10 @@ with content_col:
                     st.error(f"额度已用完（{used2}/{lim2}），请明天再试。")
                 else:
                     increment_daily_usage(_uid, "full_pipeline")
-                    # 兜底：如果页面 widget 没拿到 key，从 Supabase 再读一次
-                    _final_api_key = p_api_key
-                    if not _final_api_key:
-                        try:
-                            from integrations.supabase_portfolio import load_user_settings_admin
-                            _settings = load_user_settings_admin(_uid) or {}
-                            _final_api_key = str(
-                                _settings.get(f"{p_provider}_api_key", "") or ""
-                            ).strip()
-                        except Exception:
-                            pass
                     payload = {
                         "user_id": _uid,
                         "provider": p_provider,
                         "model": p_model,
-                        "api_key": _final_api_key,
                         "base_url": p_base_url,
                         "webhook_url": (p_webhook or "").strip(),
                         "skip_step4": p_skip_step4,
