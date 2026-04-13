@@ -371,17 +371,7 @@ def get_market_overview(tool_context: ToolContext) -> dict:
         大盘概览 dict，包含各指数的涨跌幅和近期走势。
     """
     try:
-        _ensure_tushare_token(tool_context)
-        from integrations.tushare_client import get_pro
-
-        pro = get_pro()
-        if pro is None:
-            return {"error": "Tushare 未配置，无法获取大盘数据"}
-
-        # 获取最近交易日
-        end_date = date.today().strftime("%Y%m%d")
-        start_date = (date.today() - timedelta(days=10)).strftime("%Y%m%d")
-
+        errors: list[str] = []
         indices = {
             "000001.SH": "上证指数",
             "399001.SZ": "深证成指",
@@ -390,29 +380,113 @@ def get_market_overview(tool_context: ToolContext) -> dict:
             "000905.SH": "中证500",
         }
 
-        result = {}
-        for ts_code, name in indices.items():
-            try:
-                df = pro.index_daily(
-                    ts_code=ts_code,
-                    start_date=start_date,
-                    end_date=end_date,
-                )
-                if df is not None and not df.empty:
-                    df = df.sort_values("trade_date")
-                    latest = df.iloc[-1]
-                    result[name] = {
-                        "ts_code": ts_code,
-                        "trade_date": str(latest.get("trade_date", "")),
-                        "close": round(float(latest.get("close", 0)), 2),
-                        "pct_chg": round(float(latest.get("pct_chg", 0)), 2),
-                        "vol": int(latest.get("vol", 0)),
-                        "amount": round(float(latest.get("amount", 0)), 2),
-                    }
-            except Exception as e:
-                result[name] = {"error": str(e)}
+        # 优先 tushare（有 token 时数据更稳定）
+        try:
+            _ensure_tushare_token(tool_context)
+            from integrations.tushare_client import get_pro
 
-        return {"indices": result}
+            pro = get_pro()
+            if pro is not None:
+                end_date = date.today().strftime("%Y%m%d")
+                start_date = (date.today() - timedelta(days=10)).strftime("%Y%m%d")
+                result = {}
+                for ts_code, name in indices.items():
+                    try:
+                        df = pro.index_daily(
+                            ts_code=ts_code,
+                            start_date=start_date,
+                            end_date=end_date,
+                        )
+                        if df is not None and not df.empty:
+                            df = df.sort_values("trade_date")
+                            latest = df.iloc[-1]
+                            result[name] = {
+                                "ts_code": ts_code,
+                                "trade_date": str(latest.get("trade_date", "")),
+                                "close": round(float(latest.get("close", 0)), 2),
+                                "pct_chg": round(float(latest.get("pct_chg", 0)), 2),
+                                "vol": int(latest.get("vol", 0)),
+                                "amount": round(float(latest.get("amount", 0)), 2),
+                            }
+                    except Exception as e:
+                        result[name] = {"error": str(e)}
+                if result:
+                    return {"indices": result, "source": "tushare"}
+            else:
+                errors.append("tushare: token 未配置或 client 不可用")
+        except Exception as e:
+            errors.append(f"tushare: {e}")
+
+        # 兜底 akshare（无需 token）
+        try:
+            import akshare as ak
+
+            spot = ak.stock_zh_index_spot_em()
+            if spot is None or spot.empty:
+                errors.append("akshare: stock_zh_index_spot_em 返回空")
+            else:
+                # 兼容不同版本列名
+                col_code = "代码" if "代码" in spot.columns else ("指数代码" if "指数代码" in spot.columns else "")
+                col_name = "名称" if "名称" in spot.columns else ("指数名称" if "指数名称" in spot.columns else "")
+                col_close = "最新价" if "最新价" in spot.columns else ("最新" if "最新" in spot.columns else "")
+                col_pct = "涨跌幅" if "涨跌幅" in spot.columns else ("涨跌幅(%)" if "涨跌幅(%)" in spot.columns else "")
+                col_vol = "成交量" if "成交量" in spot.columns else ""
+                col_amount = "成交额" if "成交额" in spot.columns else ""
+                if not col_code:
+                    errors.append("akshare: 缺少指数代码列")
+                else:
+                    code_to_ts = {
+                        "000001": "000001.SH",
+                        "399001": "399001.SZ",
+                        "399006": "399006.SZ",
+                        "000016": "000016.SH",
+                        "000905": "000905.SH",
+                    }
+                    target_codes = set(code_to_ts.keys())
+                    today = date.today().strftime("%Y%m%d")
+                    result = {}
+                    for _, row in spot.iterrows():
+                        code_raw = str(row.get(col_code, "") or "").strip()
+                        code = "".join(ch for ch in code_raw if ch.isdigit())[-6:]
+                        if code not in target_codes:
+                            continue
+                        name_cn = str(row.get(col_name, "") or "").strip() or indices[code_to_ts[code]]
+                        try:
+                            close_v = float(row.get(col_close, 0) or 0) if col_close else 0.0
+                        except Exception:
+                            close_v = 0.0
+                        try:
+                            pct_v = float(row.get(col_pct, 0) or 0) if col_pct else 0.0
+                        except Exception:
+                            pct_v = 0.0
+                        try:
+                            vol_v = int(float(row.get(col_vol, 0) or 0)) if col_vol else 0
+                        except Exception:
+                            vol_v = 0
+                        try:
+                            amount_v = round(float(row.get(col_amount, 0) or 0), 2) if col_amount else 0.0
+                        except Exception:
+                            amount_v = 0.0
+
+                        result[name_cn] = {
+                            "ts_code": code_to_ts[code],
+                            "trade_date": today,
+                            "close": round(close_v, 2),
+                            "pct_chg": round(pct_v, 2),
+                            "vol": vol_v,
+                            "amount": amount_v,
+                        }
+
+                    if result:
+                        return {"indices": result, "source": "akshare"}
+                    errors.append("akshare: 目标指数未命中")
+        except Exception as e:
+            errors.append(f"akshare: {e}")
+
+        return {
+            "error": "无法获取大盘数据",
+            "details": "; ".join(errors) if errors else "unknown",
+        }
     except Exception as e:
         logger.exception("get_market_overview error")
         return {"error": str(e)}

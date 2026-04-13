@@ -6,6 +6,7 @@ Wyckoff 智能对话 — 首页。
 基于 Google ADK 的对话式投研助手，用户可通过自然语言与 Wyckoff Agent 交互，
 触发系统所有能力：筛选、诊断、研报、策略、跟踪等。
 """
+import json
 import os
 
 import streamlit as st
@@ -86,6 +87,9 @@ _WELCOME_TEXT = (
     "*说吧，你想看什么？*"
 )
 
+# 当系统提示词/工具策略有重要变更时，提升版本号以触发会话内 manager 重建
+CHAT_AGENT_VERSION = "2026-04-10-market-fetch-v1"
+
 def _get_chat_config() -> tuple[str, str, str, str]:
     """
     获取读盘室对话配置：(provider, api_key, model, base_url)。
@@ -139,9 +143,10 @@ def _init_chat_manager():
     user = st.session_state.get("user") or {}
     user_id = str(user.get("id", "") if isinstance(user, dict) else "").strip()
 
-    # 检测 user_id 变化 → 强制重建 manager，防止跨账号串用
+    # 检测 user_id 变化或 agent 版本升级 → 强制重建 manager
     prev_uid = st.session_state.get("_chat_manager_user_id", "")
-    if prev_uid and prev_uid != user_id:
+    prev_ver = st.session_state.get("_chat_manager_agent_version", "")
+    if (prev_uid and prev_uid != user_id) or (prev_ver and prev_ver != CHAT_AGENT_VERSION):
         st.session_state.pop("chat_manager", None)
         st.session_state.pop("chat_messages", None)
 
@@ -163,6 +168,7 @@ def _init_chat_manager():
         )
         st.session_state["chat_manager"] = mgr
         st.session_state["_chat_manager_user_id"] = user_id
+        st.session_state["_chat_manager_agent_version"] = CHAT_AGENT_VERSION
 
     return st.session_state["chat_manager"]
 
@@ -332,7 +338,7 @@ with content_col:
 
         # ── 用户输入（新对话在发送按钮左侧） ──
         st.markdown('<div class="compose-row">', unsafe_allow_html=True)
-        with st.form("chat_compose_form", clear_on_submit=True):
+        with st.form("chat_compose_form", clear_on_submit=False):
             compose_left, compose_mid, compose_right = st.columns([1.25, 7.2, 1.2])
             # 将发送按钮定义在最前，保证按 Enter 时优先触发发送而不是新对话
             with compose_right:
@@ -347,7 +353,7 @@ with content_col:
                     use_container_width=True,
                 )
             with compose_mid:
-                st.text_input(
+                draft_input = st.text_input(
                     "输入消息",
                     key="_chat_draft",
                     label_visibility="collapsed",
@@ -360,9 +366,11 @@ with content_col:
             if mgr:
                 mgr.new_session()
             st.session_state["chat_messages"] = []
+            st.session_state["_chat_draft"] = ""
             st.rerun()
 
-        prompt = str(st.session_state.get("_chat_draft", "") or "").strip() if send_clicked else ""
+        # 直接使用本次表单返回值，避免 Enter 提交时被 session_state 清空导致消息丢失
+        prompt = str(draft_input or "").strip() if send_clicked else ""
         if prompt:
 
             # 显示用户消息
@@ -385,6 +393,7 @@ with content_col:
                     thinking_placeholder = None
                     final_response = ""
                     called_tools: list[str] = []
+                    seen_tool_calls: set[str] = set()
 
                     stream_status_placeholder.markdown(
                         '<div class="chat-stream-status">🧠 正在思考与检索数据...</div>',
@@ -405,6 +414,20 @@ with content_col:
 
                         elif event_type == "tool_call":
                             tool_name = data.get("name", "unknown")
+                            tool_args = data.get("args", {})
+                            try:
+                                args_sig = json.dumps(
+                                    tool_args,
+                                    ensure_ascii=False,
+                                    sort_keys=True,
+                                    default=str,
+                                )
+                            except Exception:
+                                args_sig = str(tool_args)
+                            call_sig = f"{tool_name}:{args_sig}"
+                            if call_sig in seen_tool_calls:
+                                continue
+                            seen_tool_calls.add(call_sig)
                             display_name = TOOL_DISPLAY_NAMES.get(tool_name, tool_name)
                             called_tools.append(f"🔧 {display_name}")
                             stream_status_placeholder.markdown(
@@ -446,5 +469,6 @@ with content_col:
                             "role": "assistant",
                             "content": final_response,
                         })
+                    st.session_state["_chat_draft"] = ""
 
             st.rerun()
