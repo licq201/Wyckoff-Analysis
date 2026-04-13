@@ -2,8 +2,7 @@
 """
 ADK Session & Runner 管理 — 为 Streamlit Chat 页面提供会话管理。
 
-Phase 1 使用 InMemorySessionService（进程内存储，重启丢失）；
-后续可切换为 DatabaseSessionService 连接 Supabase PostgreSQL 实现持久化。
+使用 InMemorySessionService（进程内存储，重启丢失）。
 
 真流式实现：通过 Thread + Queue 桥接 ADK 的 async streaming 到 Streamlit 的同步生成器，
 实现 token 级流式输出、thinking 展示和 tool call 展示。
@@ -60,7 +59,7 @@ class ChatSessionManager:
         # API Key 已通过 create_agent(api_key=...) 注入 Gemini 实例，
         # 不再写入 os.environ，避免多用户并发时互相覆盖。
 
-        # Phase 1: InMemory Session Service
+        # InMemory Session Service（进程级，重启丢失）
         self._session_service = InMemorySessionService()
 
         # Runner

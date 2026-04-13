@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-# Copyright (c) 2024 youngcan. All Rights Reserved.
+# Copyright (c) 2024-2026 youngcan. All Rights Reserved.
 
 """
 AI 分析用系统提示词常量 — 统一存放。
