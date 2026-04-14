@@ -1,26 +1,29 @@
-# 🏛️ Wyckoff Trading Agent 3.0 — 威科夫交易智能体
+# 🏛️ Wyckoff Trading Agent 3.1 — 威科夫交易智能体
 
-> ### 🔥 3.0 已上线 — 威科夫本人"复活"，坐镇你的读盘室
+> ### 🔥 3.1 已上线 — 威科夫大师走进你的命令行
 >
-> 不再只是冷冰冰的量化筛选脚本。**3.0 把一个活的威科夫大师塞进了你的终端** — 他能听懂你的话、调动九大武器库、自主串联多步推理，最终给出"打还是不打"的明确结论。
+> 不再只是冷冰冰的量化筛选脚本。**3.0 把一个活的威科夫大师塞进了你的浏览器，3.1 又把他塞进了你的终端** — 他能听懂你的话、调动九大武器库、自主串联多步推理，最终给出"打还是不打"的明确结论。
 >
-> **一句话总结：你说人话，他读盘面，全自动。**
+> **一句话总结：你说人话，他读盘面，全自动。Web 和 CLI 双通道。**
 >
 > **👉 [立即体验线上 Agent](https://wyckoff-analysis-youngcanphoenix.streamlit.app/)**
+>
+> **👉 终端用户：`uv venv && source .venv/bin/activate && uv pip install youngcan-wyckoff-analysis && wyckoff`**
 
 ---
 
-## ⚡ 3.0 有什么不一样
+## ⚡ 3.1 有什么不一样
 
-| 维度 | 2.x（脚本时代） | **3.0（Agent 时代）** |
-|------|-----------------|----------------------|
-| 交互方式 | 点按钮、填参数、等结果 | **对话即命令** — "帮我看看 000001 和 600519 哪个更值得买" |
-| 决策流程 | 人工串联各模块 | **LLM 自主编排** — 自动调诊断→查行情→对比→下结论 |
-| 工具调度 | 固定流水线 | **9 大武器随叫随到**，调几次、调哪个，AI 实时决策 |
-| 人格 | 无 | **威科夫大师人格**，用 Supply/Demand 法则审视每一笔交易 |
-| 底座 | 无 Agent 框架 | **Google ADK** — 工业级 Agent 运行时 |
+| 维度 | 2.x（脚本时代） | **3.0（Agent 时代）** | **3.1（双通道）** |
+|------|-----------------|----------------------|-------------------|
+| 交互方式 | 点按钮、填参数、等结果 | **对话即命令** — Web 读盘室 | **Web + CLI 双通道** — 终端里也能对话 |
+| 决策流程 | 人工串联各模块 | **LLM 自主编排** — 自动调诊断→查行情→对比→下结论 | 同左，CLI 完全复用 |
+| 工具调度 | 固定流水线 | **9 大武器随叫随到**，调几次、调哪个，AI 实时决策 | 同左 |
+| 模型支持 | 单厂商 | Gemini（ADK 原生） | **Gemini / Claude / OpenAI 三选一**，CLI 原生多模型 |
+| 底座 | 无 Agent 框架 | **Google ADK** — 工业级 Agent 运行时 | CLI 端**裸写 Agent 循环**，零框架 |
+| 安装 | clone + pip | 同左 | **`pip install youngcan-wyckoff-analysis && wyckoff`** |
 
-> 2.x 的全部能力（五层漏斗、AI 研报、私人决断、回测）**全部保留且已接入 Agent**，3.0 是超集而非替代。
+> 2.x 的全部能力（五层漏斗、AI 研报、私人决断、回测）**全部保留且已接入 Agent**，3.x 是超集而非替代。
 
 ---
 
@@ -100,13 +103,34 @@ python -m pip install -r requirements.txt
 
 ### 3. 运行
 
-**Web 界面（推荐）**：打开浏览器，直接跟威科夫大师对话。
+**Web 界面**：打开浏览器，直接跟威科夫大师对话。
 
 ```bash
 streamlit run streamlit_app.py
 ```
 
-**命令行**：批量导出。
+**终端 CLI（推荐）**：装完即用，不需要 clone 仓库。
+
+```bash
+# 安装
+uv venv
+source .venv/bin/activate
+uv pip install youngcan-wyckoff-analysis
+
+# 运行
+wyckoff              # 启动终端读盘室
+wyckoff update       # 升级到最新版
+```
+
+启动后在 TUI 内交互式配置：
+
+- `/model` — 选择 Provider（Gemini / Claude / OpenAI 及兼容端点）、输入 API Key、选择模型，配置自动保存
+- `/login` — 登录账号，打通持仓和云端凭证，登录态自动保持
+- 直接输入问题开始对话
+
+终端内支持：上下箭头翻阅历史、`/` 命令 Tab 补全、`/help` `/clear` `/quit`。
+
+**命令行导出**：批量导出 CSV。
 
 ```bash
 python -m integrations.fetch_a_share_csv --symbol 300364
@@ -298,19 +322,20 @@ Step4 完全由 GitHub Actions Secrets 驱动：读取 `SUPABASE_USER_ID` 定位
 
 ```
 ╔══════════════════════════════════════════════════════════════════════════════════════╗
-║                      🏛️  WYCKOFF TRADING AGENT 3.0  ·  System Panorama             ║
+║                      🏛️  WYCKOFF TRADING AGENT 3.1  ·  System Panorama             ║
 ╚══════════════════════════════════╤═══════════════════════════════════════════════════╝
                                    │
-                    ┌──────────────┴──────────────┐
-                    │      Streamlit Web UI        │
-                    │   Reading Room  ·  Pages     │
-                    └──────┬──────────────┬────────┘
-                           │              │
-            ┌──────────────┘              └──────────────┐
-            ▼                                            ▼
+              ┌────────────────────┼────────────────────┐
+              ▼                    ▼                    ▼
+   ┌──────────────────┐ ┌──────────────────┐ ┌──────────────────┐
+   │ Streamlit Web UI  │ │  CLI Terminal    │ │  GitHub Actions  │
+   │ Reading Room      │ │  wyckoff cmd     │ │  cron Pipeline   │
+   └────────┬─────────┘ └────────┬─────────┘ └────────┬─────────┘
+            │                    │                     │
+            ▼                    ▼                     ▼
 ┌───────────────────────────────────┐     ┌───────────────────────────────────┐
 │      🧠 AGENT BRAIN               │     │      ⚙️  ETL PIPELINE              │
-│      Google ADK  ·  3.0 Core      │     │      GitHub Actions  ·  cron      │
+│  Web: Google ADK  ·  CLI: 裸写    │     │      GitHub Actions  ·  cron      │
 │                                   │     │                                   │
 │  ┌─────────────────────────────┐  │     │  ┌─────────────────────────────┐  │
 │  │      wyckoff_advisor        │  │     │  │  Step 2  Funnel Screening   │  │
@@ -426,11 +451,13 @@ Step4 完全由 GitHub Actions Secrets 驱动：读取 `SUPABASE_USER_ID` 定位
 
 ### LLM Provider（8 大厂商全通）
 
-Agent 默认 Gemini（ADK 原生），可通过 LiteLLM 桥接切换；Pipeline 通过 `llm_client.py` 多 provider 直连：
+- **Web Agent**：默认 Gemini（ADK 原生），可通过 LiteLLM 桥接切换
+- **CLI Agent**：Gemini / Claude / OpenAI 三选一，TUI 内 `/model` 切换，支持任意 OpenAI 兼容端点
+- **Pipeline**：通过 `llm_client.py` 多 provider 直连
 
 | Provider | 状态 | 说明 |
 |----------|------|------|
-| Gemini | ✅ 主力 | Agent `gemini-2.0-flash` / Pipeline `gemini-3.1-flash-lite-preview` |
+| Gemini | ✅ 主力 | Agent `gemini-2.5-flash` / Pipeline `gemini-3.1-flash-lite-preview` |
 | OpenAI | ✅ | GPT-4o / GPT-4o-mini |
 | DeepSeek | ✅ | DeepSeek-Chat |
 | Qwen | ✅ | DashScope OpenAI-compatible |
@@ -451,6 +478,17 @@ Agent 默认 Gemini（ADK 原生），可通过 LiteLLM 桥接切换；Pipeline 
 ├── app/                    # UI 组件（layout/auth/navigation）
 │   ├── background_jobs.py  # Streamlit 侧后台任务状态管理
 │   └── ...
+├── cli/                    # 🖥️ 终端 CLI Agent（裸写，零框架）
+│   ├── __main__.py         # 入口：wyckoff 命令 / python -m cli
+│   ├── agent.py            # 核心 Agent 循环（think → tool_call → execute → think）
+│   ├── providers/          # 多模型适配层
+│   │   ├── base.py         # LLMProvider 抽象接口
+│   │   ├── gemini.py       # Gemini（google-genai SDK）
+│   │   ├── claude.py       # Claude（anthropic SDK）
+│   │   └── openai.py       # OpenAI（openai SDK，支持自定义 base_url）
+│   ├── auth.py             # 认证（Supabase 登录 + session 持久化）
+│   ├── tools.py            # 工具注册表（复用 chat_tools.py，ToolContext shim）
+│   └── ui.py               # 终端 UI（rich Markdown + prompt_toolkit）
 ├── agents/                 # 🤖 对话 Agent 层（Google ADK）
 │   ├── wyckoff_chat_agent.py # 对话 Agent 定义（ADK LlmAgent，威科夫人格）
 │   ├── chat_tools.py       # 9 个 FunctionTool — 包装引擎能力给对话 Agent

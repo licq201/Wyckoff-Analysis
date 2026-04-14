@@ -17,7 +17,13 @@ import time
 from datetime import date, datetime, timedelta
 from typing import Any
 
-from google.adk.tools import ToolContext
+try:
+    from google.adk.tools import ToolContext
+except ImportError:
+    # CLI 模式下无 ADK，使用 shim
+    class ToolContext:  # type: ignore[no-redef]
+        def __init__(self, state=None):
+            self.state = state or {}
 
 logger = logging.getLogger(__name__)
 
