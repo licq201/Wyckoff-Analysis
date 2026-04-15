@@ -19,6 +19,22 @@ TRIGGER_LABELS = {
     "evr": "Effort vs Result（放量不跌）",
 }
 
+TRIGGER_SHORT_LABELS = {
+    "sos": "SOS",
+    "spring": "Spring",
+    "lps": "LPS",
+    "evr": "EVR",
+}
+
+# 分组展示优先级：SOS > EVR > Spring > LPS
+TRIGGER_GROUP_ORDER = ["sos", "evr", "spring", "lps"]
+TRIGGER_GROUP_TITLES = {
+    "sos": "⚡ SOS 量价点火",
+    "evr": "📊 EVR 放量不跌",
+    "spring": "🌀 Spring 终极震仓",
+    "lps": "🔄 LPS 缩量回踩",
+}
+
 
 def calc_close_return_pct(close_series: pd.Series, lookback: int) -> float | None:
     """计算 close 序列的 N 日收益率（%）。"""

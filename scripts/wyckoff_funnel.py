@@ -58,6 +58,9 @@ from utils.trading_clock import CN_TZ, resolve_end_calendar_day
 # ── tools/ 层导入 ──
 from tools.candidate_ranker import (
     TRIGGER_LABELS,
+    TRIGGER_SHORT_LABELS,
+    TRIGGER_GROUP_ORDER,
+    TRIGGER_GROUP_TITLES,
     rank_l3_candidates as _rank_l3_candidates,
 )
 
@@ -525,18 +528,23 @@ def run(
         benchmark_context["latest_close_map"] = latest_close_map
 
     code_to_reasons: dict[str, list[str]] = {}
-    code_to_best_score: dict[str, float] = {}
+    code_to_trigger_keys: dict[str, list[str]] = {}
+    code_to_total_score: dict[str, float] = {}
     for key, label in TRIGGER_LABELS.items():
         for code, score in triggers.get(key, []):
             if code not in code_to_reasons:
                 code_to_reasons[code] = []
-                code_to_best_score[code] = score
+                code_to_trigger_keys[code] = []
+                code_to_total_score[code] = 0.0
             code_to_reasons[code].append(label)
-            code_to_best_score[code] = max(code_to_best_score.get(code, 0), score)
+            code_to_trigger_keys[code].append(key)
+            code_to_total_score[code] += score
 
+    # 兼容旧变量名（下游可能引用）
+    code_to_best_score = code_to_total_score
     sorted_codes = sorted(
         code_to_reasons.keys(),
-        key=lambda c: -code_to_best_score.get(c, 0),
+        key=lambda c: -code_to_total_score.get(c, 0),
     )
     unique_hit_count = len(sorted_codes)
     use_legacy_selection = FUNNEL_AI_SELECTION_MODE in {
@@ -615,10 +623,14 @@ def run(
         bench_line = "未知"
         pv_line = "暂无大盘量价推演"
         if benchmark_context:
+            _close = benchmark_context.get("close") or 0
+            _ma50 = benchmark_context.get("ma50") or 0
+            _ma200 = benchmark_context.get("ma200") or 0
+            _cum3 = benchmark_context.get("recent3_cum_pct") or 0
             bench_line = (
-                f"{benchmark_context.get('regime')} | close={benchmark_context.get('close')} "
-                f"ma50={benchmark_context.get('ma50')} ma200={benchmark_context.get('ma200')} "
-                f"3d={benchmark_context.get('recent3_pct')} cum3={benchmark_context.get('recent3_cum_pct')}"
+                f"{benchmark_context.get('regime')} | "
+                f"收盘 {float(_close):.2f} | MA50 {float(_ma50):.2f} | MA200 {float(_ma200):.2f} | "
+                f"近3日 {float(_cum3):+.2f}%"
             )
             pv_line = str(
                 benchmark_context.get("market_pv_outlook")
@@ -638,15 +650,49 @@ def run(
             f"**候选分层**: 命中股票{unique_hit_count} -> AI输入全量{len(selected_for_ai)}",
             f"**Top 行业**: {', '.join(metrics['top_sectors']) if metrics['top_sectors'] else '无'}",
             "",
-            "**命中列表（按优先级）代码 名称 | 筛选理由 | 分值**",
-            "",
         ]
-        for code in selected_for_ai:
-            name = name_map.get(code, code)
-            reasons = "、".join(code_to_reasons.get(code, []))
-            lines.append(
-                f"• {code} {name} | {reasons} | score={code_to_best_score.get(code, 0):.2f}"
-            )
+
+        # ── 命中列表：按信号分组 ──
+        def _score_star(s: float) -> str:
+            if s >= 10:
+                return "★★"
+            if s >= 5:
+                return "★ "
+            return "  "
+
+        selected_set = set(selected_for_ai)
+
+        # 1) 多信号共振组（置顶）
+        multi_signal = [c for c in selected_for_ai if len(code_to_trigger_keys.get(c, [])) > 1]
+        if multi_signal:
+            lines.append(f"**【🔥 多信号共振】{len(multi_signal)} 只**")
+            for code in sorted(multi_signal, key=lambda c: -code_to_total_score.get(c, 0)):
+                name = name_map.get(code, code)
+                short = "+".join(TRIGGER_SHORT_LABELS.get(k, k) for k in code_to_trigger_keys.get(code, []))
+                score = code_to_total_score.get(code, 0)
+                lines.append(f"{_score_star(score)} {code} {name}  {score:.2f}  {short}")
+            lines.append("")
+
+        # 2) 各信号分组
+        single_signal_codes = [c for c in selected_for_ai if c not in set(multi_signal)]
+        # 为每个 code 确定主信号（取第一个 trigger key）
+        code_primary_key: dict[str, str] = {}
+        for code in single_signal_codes:
+            keys = code_to_trigger_keys.get(code, [])
+            code_primary_key[code] = keys[0] if keys else "sos"
+
+        for group_key in TRIGGER_GROUP_ORDER:
+            group_codes = [c for c in single_signal_codes if code_primary_key.get(c) == group_key]
+            if not group_codes:
+                continue
+            group_title = TRIGGER_GROUP_TITLES.get(group_key, group_key)
+            lines.append(f"**【{group_title}】{len(group_codes)} 只**")
+            for code in sorted(group_codes, key=lambda c: -code_to_total_score.get(c, 0)):
+                name = name_map.get(code, code)
+                score = code_to_total_score.get(code, 0)
+                lines.append(f"{_score_star(score)} {code} {name}  {score:.2f}")
+            lines.append("")
+
         if not selected_for_ai:
             lines.append("无")
 
