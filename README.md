@@ -510,7 +510,7 @@ Step4 完全由 GitHub Actions Secrets 驱动：读取 `SUPABASE_USER_ID` 定位
 │   ├── rag_veto.py         # RAG 防雷模块
 │   └── github_actions.py   # GitHub Actions 触发与结果查询
 ├── pages/                  # Streamlit 页面
-│   ├── Export.py           # 数据导出（A 股 CSV + 跳转自定义导出/下载历史）
+│   ├── Export.py           # 数据导出（A 股 CSV + 跳转自定义导出）
 │   ├── AIAnalysis.py       # 大师模式（单股深度分析 + 图表生成）
 │   ├── WyckoffScreeners.py # 沙里淘金（后台漏斗筛选，高级参数调优）
 │   ├── Portfolio.py        # 持仓管理

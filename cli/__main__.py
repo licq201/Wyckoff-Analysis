@@ -45,6 +45,7 @@ _silence_streamlit()
 
 def _create_provider(provider_name: str, api_key: str, model: str = "", base_url: str = ""):
     from cli.providers import PROVIDERS
+    import inspect
 
     cls = PROVIDERS.get(provider_name)
     if cls is None:
@@ -62,16 +63,10 @@ def _create_provider(provider_name: str, api_key: str, model: str = "", base_url
     if base_url:
         kwargs["base_url"] = base_url
 
-    import inspect
     sig = inspect.signature(cls.__init__)
     kwargs = {k: v for k, v in kwargs.items() if k in sig.parameters}
 
     return cls(**kwargs), None
-
-
-def _load_system_prompt() -> str:
-    from core.prompts import CHAT_AGENT_SYSTEM_PROMPT
-    return CHAT_AGENT_SYSTEM_PROMPT
 
 
 def _do_update():
@@ -129,7 +124,8 @@ def main():
     tools = ToolRegistry(user_id=auth_state["user_id"])
 
     # 加载系统提示词
-    system_prompt = _load_system_prompt()
+    from core.prompts import CHAT_AGENT_SYSTEM_PROMPT
+    system_prompt = CHAT_AGENT_SYSTEM_PROMPT
 
     # Provider 状态
     state = {
@@ -281,10 +277,10 @@ def main():
                 messages.pop()
         except Exception as e:
             ui.print_error(f"Agent 错误: {e}")
-            while messages and messages[-1]["role"] != "user":
+            # 回滚本轮消息（包括 user + assistant/tool）
+            while messages and messages[-1].get("role") != "user":
                 messages.pop()
-            if messages and messages[-1]["role"] == "user":
-                messages.pop()
+            messages.pop() if messages else None
 
 
 if __name__ == "__main__":

@@ -14,19 +14,16 @@ import json
 import logging
 from typing import Any
 
+from rich.live import Live
+from rich.spinner import Spinner
+from rich.text import Text
+
 from cli.providers.base import LLMProvider
 from cli.tools import ToolRegistry
 
 logger = logging.getLogger(__name__)
 
-
-def _thinking_spinner(console):
-    """返回一个显示思考中动画的 Live 上下文管理器。"""
-    from rich.live import Live
-    from rich.spinner import Spinner
-    from rich.text import Text
-    spinner = Spinner("dots", text=Text.from_markup("  [dim]思考中…[/dim]"))
-    return Live(spinner, console=console, refresh_per_second=10, transient=True)
+_THINKING_TEXT = Text.from_markup("  [dim]思考中…[/dim]")
 
 # 单轮最大工具调用次数（防止死循环）
 MAX_TOOL_ROUNDS = 15
@@ -59,7 +56,7 @@ def run(
     """
     for round_idx in range(MAX_TOOL_ROUNDS):
         if console:
-            live = _thinking_spinner(console)
+            live = Live(Spinner("dots", text=_THINKING_TEXT), console=console, refresh_per_second=10, transient=True)
             live.start()
         else:
             live = None

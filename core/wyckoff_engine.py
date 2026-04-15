@@ -24,18 +24,8 @@ import pandas as pd
 
 def normalize_hist_from_fetch(df: pd.DataFrame) -> pd.DataFrame:
     """将 fetch_a_share_csv._fetch_hist 返回的 DataFrame 转为筛选器所需格式。"""
-    col_map = {
-        "日期": "date",
-        "开盘": "open",
-        "最高": "high",
-        "最低": "low",
-        "收盘": "close",
-        "成交量": "volume",
-        "成交额": "amount",
-        "涨跌幅": "pct_chg",
-        "换手率": "turnover",  # <--- 新增这行，捕获换手率
-        "换手": "turnover"     # <--- 兼容不同数据源的命名
-    }
+    from core.stock_cache import _COL_MAP
+    col_map = {**_COL_MAP, "换手率": "turnover", "换手": "turnover"}
     out = df.rename(columns=col_map)
     keep = [
         c

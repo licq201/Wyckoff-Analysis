@@ -20,9 +20,6 @@ def init_session_state() -> None:
     _set_default("current_symbol", "300364")
     _set_default("should_run", False)
     _set_default("mobile_mode", False)
-    _set_default("last_home_batch_key", "")
-    _set_default("last_home_single_key", "")
-    _set_default("last_custom_export_query", "")
     _set_default("custom_export_payload", None)
     _set_default("custom_export_source_id", "")
     _set_default("custom_export_selected_signature", "")
@@ -30,71 +27,23 @@ def init_session_state() -> None:
     _set_default("wyckoff_payload", None)
 
     # 用户敏感配置不从环境变量兜底，避免跨账号污染
-    _set_default("feishu_webhook", "")
-    if st.session_state.feishu_webhook is None:
-        st.session_state.feishu_webhook = ""
-    _set_default("wecom_webhook", "")
-    if st.session_state.get("wecom_webhook") is None:
-        st.session_state.wecom_webhook = ""
-    _set_default("dingtalk_webhook", "")
-    if st.session_state.get("dingtalk_webhook") is None:
-        st.session_state.dingtalk_webhook = ""
-
-    _set_default("gemini_api_key", "")
-    if st.session_state.gemini_api_key is None:
-        st.session_state.gemini_api_key = ""
-
-    _set_default("tushare_token", "")
-    if st.session_state.tushare_token is None:
-        st.session_state.tushare_token = ""
+    for key in (
+        "feishu_webhook", "wecom_webhook", "dingtalk_webhook",
+        "gemini_api_key", "tushare_token", "tg_bot_token", "tg_chat_id",
+        "openai_api_key", "openai_model",
+        "zhipu_api_key", "zhipu_model",
+        "minimax_api_key", "minimax_model",
+        "deepseek_api_key", "deepseek_model",
+        "qwen_api_key", "qwen_model",
+        "kimi_api_key", "kimi_model",
+        "volcengine_api_key", "volcengine_model",
+    ):
+        _set_default(key, "")
 
     _set_default("gemini_model", DEFAULT_GEMINI_MODEL)
-    if st.session_state.gemini_model is None:
-        st.session_state.gemini_model = DEFAULT_GEMINI_MODEL
-    for key in (
-        "openai_api_key",
-        "openai_model",
-        "zhipu_api_key",
-        "zhipu_model",
-        "minimax_api_key",
-        "minimax_model",
-        "deepseek_api_key",
-        "deepseek_model",
-        "qwen_api_key",
-        "qwen_model",
-        "kimi_api_key",
-        "kimi_model",
-        "volcengine_api_key",
-        "volcengine_model",
-    ):
-        _set_default(key, "" if "model" not in key else "")
-    for k in (
-        "openai_model",
-        "zhipu_model",
-        "minimax_model",
-        "deepseek_model",
-        "qwen_model",
-        "kimi_model",
-        "volcengine_model",
-    ):
-        if st.session_state.get(k) is None:
-            st.session_state[k] = ""
     _set_default("gemini_base_url", "")
-    _set_default("openai_base_url", OPENAI_COMPATIBLE_BASE_URLS.get("openai", ""))
-    _set_default("zhipu_base_url", OPENAI_COMPATIBLE_BASE_URLS.get("zhipu", ""))
-    _set_default("minimax_base_url", OPENAI_COMPATIBLE_BASE_URLS.get("minimax", ""))
-    _set_default("deepseek_base_url", OPENAI_COMPATIBLE_BASE_URLS.get("deepseek", ""))
-    _set_default("qwen_base_url", OPENAI_COMPATIBLE_BASE_URLS.get("qwen", ""))
-    _set_default("kimi_base_url", OPENAI_COMPATIBLE_BASE_URLS.get("kimi", ""))
-    _set_default("volcengine_base_url", OPENAI_COMPATIBLE_BASE_URLS.get("volcengine", ""))
-
-    _set_default("tg_bot_token", "")
-    if st.session_state.tg_bot_token is None:
-        st.session_state.tg_bot_token = ""
-
-    _set_default("tg_chat_id", "")
-    if st.session_state.tg_chat_id is None:
-        st.session_state.tg_chat_id = ""
+    for provider in ("openai", "zhipu", "minimax", "deepseek", "qwen", "kimi", "volcengine"):
+        _set_default(f"{provider}_base_url", OPENAI_COMPATIBLE_BASE_URLS.get(provider, ""))
 
     # 从服务端缓存恢复 token（刷新页面后登录态保持）
     # 原理：token 存在 st.cache_resource（进程级内存），session_key 存在 URL query_params。
@@ -374,8 +323,6 @@ def _vix_chip_tone(raw) -> str:
         return "neutral"
     if value >= 15:
         return "negative"
-    if value >= 8:
-        return "caution"
     if value > 0:
         return "caution"
     if value < 0:

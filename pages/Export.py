@@ -4,7 +4,6 @@
 
 import streamlit as st
 from datetime import date, timedelta, datetime
-import requests
 import random
 import time
 from tenacity import (
@@ -23,7 +22,6 @@ from integrations.fetch_a_share_csv import (
     _stock_name_from_code,
 )
 from utils import extract_symbols_from_text, safe_filename_part, stock_sector_em
-from integrations.download_history import add_download_history
 from app.auth_component import logout
 from app.layout import is_data_source_failure_message, setup_page, show_user_error
 from app.ui_helpers import show_page_loading, inject_custom_css
@@ -454,34 +452,6 @@ with content_col:
                         prefix=file_name_zip.replace(".zip", ""),
                     )
 
-                    # === 自动记录批量下载历史 ===
-                    # 只要任务完成，就记录一次
-                    symbols_str = "_".join(symbols[:3]) + (
-                        f"_etc_{len(symbols)}" if len(symbols) > 3 else ""
-                    )
-                    current_batch_key = (
-                        f"batch_{symbols_str}_{datetime.now().strftime('%H%M')}"
-                    )
-                    last_batch_key = st.session_state.get("last_home_batch_key")
-
-                    if current_batch_key != last_batch_key:
-                        zip_bytes_for_history = file_loader(zip_path)
-                        add_download_history(
-                            page="Home",
-                            source="批量生成",
-                            title=f"批量 ({len(symbols)} 只)",
-                            file_name=file_name_zip,
-                            mime="application/zip",
-                            data=zip_bytes_for_history,
-                            request_payload={
-                                "kind": "home_batch_zip",
-                                "symbols": symbols,
-                                "start_trade_date": str(window.start_trade_date),
-                                "end_trade_date": str(window.end_trade_date),
-                                "adjust": adjust,
-                            },
-                        )
-                        st.session_state["last_home_batch_key"] = current_batch_key
                     # 通知：飞书 + 企微 + 钉钉（任一配置则发送）
                     feishu = st.session_state.get("feishu_webhook") or ""
                     wecom = st.session_state.get("wecom_webhook") or ""
@@ -605,30 +575,6 @@ with content_col:
                     prefix=file_name_zip.replace(".zip", ""),
                 )
 
-                # === 自动记录单只下载历史 ===
-                current_single_key = f"single_{st.session_state.current_symbol}_{datetime.now().strftime('%H%M')}"
-                last_single_key = st.session_state.get("last_home_single_key")
-
-                if current_single_key != last_single_key:
-                    zip_bytes_for_history = file_loader(zip_path)
-                    add_download_history(
-                        page="Home",
-                        source="单只导出",
-                        title=f"{st.session_state.current_symbol} {name}",
-                        file_name=file_name_zip,
-                        mime="application/zip",
-                        data=zip_bytes_for_history,
-                        request_payload={
-                            "kind": "home_single_zip",
-                            "symbol": st.session_state.current_symbol,
-                            "name": name,
-                            "start_trade_date": str(window.start_trade_date),
-                            "end_trade_date": str(window.end_trade_date),
-                            "adjust": adjust,
-                        },
-                    )
-                    st.session_state["last_home_single_key"] = current_single_key
-
                 st.markdown("### 📥 下载数据")
                 if is_mobile:
                     st.download_button(
@@ -696,51 +642,6 @@ with content_col:
 
     else:
         st.info("👈 请在左侧输入参数并点击「开始获取数据」")
-
-    # ── 下载历史（内联） ──
-    st.divider()
-    with st.expander("🕘 下载历史（最近 20 条）", expanded=False):
-        from integrations.download_history import get_download_history, load_download_history_artifact
-
-        _history = get_download_history()
-        if not _history:
-            st.info("暂无下载记录。")
-        else:
-            _rows = []
-            _history_map = {}
-            for _idx, _item in enumerate(_history):
-                _ts_str = _item.get("created_at", "")[:19].replace("T", " ")
-                _label = f"{_ts_str} | {_item.get('file_name', '')}"
-                _history_map[_label] = _idx
-                _rows.append({
-                    "时间": _ts_str,
-                    "页面": _item.get("page", ""),
-                    "数据源": _item.get("source", ""),
-                    "文件名": _item.get("file_name", ""),
-                    "大小(KB)": _item.get("size_kb", 0),
-                    "可重下": "是" if _item.get("artifact_path") else "否",
-                })
-            st.dataframe(_rows, use_container_width=True, height=400, hide_index=True)
-
-            st.markdown("##### ♻️ 历史文件重下")
-            _labels = list(_history_map.keys())
-            _selected_label = st.selectbox("选择一条记录", options=_labels, key="export_hist_select")
-            _selected = _history[_history_map[_selected_label]]
-            _selected_name = str(_selected.get("file_name") or "history_download.bin")
-            _selected_mime = str(_selected.get("mime") or "application/octet-stream")
-            _artifact_bytes = load_download_history_artifact(_selected)
-            if _artifact_bytes is None:
-                st.info("该记录暂不支持直接重下。")
-            else:
-                st.download_button(
-                    "下载该历史文件",
-                    data=_artifact_bytes,
-                    file_name=_selected_name,
-                    mime=_selected_mime,
-                    type="primary",
-                    use_container_width=True,
-                    key="export_hist_download",
-                )
 
     # ── 自定义导出跳转 ──
     st.page_link("pages/CustomExport.py", label="🧰 更多数据源（ETF / 指数 / 宏观 CPI）→ 自定义导出", use_container_width=True)

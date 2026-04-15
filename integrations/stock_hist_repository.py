@@ -12,7 +12,6 @@ from core.stock_cache import (
     load_cached_history,
     normalize_hist_df,
     upsert_cache_data,
-    upsert_cache_meta,
 )
 from integrations.data_source import fetch_stock_hist as fetch_stock_hist_from_source
 
@@ -185,14 +184,6 @@ def get_stock_hist(
             adjust=cache_adjust,
             source=chosen_source,
             df=merged,
-            context=context,
-        )
-        upsert_cache_meta(
-            symbol=symbol,
-            adjust=cache_adjust,
-            source=chosen_source,
-            start_date=new_start,
-            end_date=new_end,
             context=context,
         )
         print(

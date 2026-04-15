@@ -188,9 +188,8 @@ def diagnose_stock(code: str, cost: float = 0.0, tool_context: ToolContext = Non
             return {"error": f"无法获取 {code} 的行情数据"}
 
         # 标准化列名
-        col_map = {"日期": "date", "开盘": "open", "最高": "high",
-                    "最低": "low", "收盘": "close", "成交量": "volume"}
-        df = df.rename(columns=col_map)
+        from core.stock_cache import _COL_MAP
+        df = df.rename(columns=_COL_MAP)
 
         name = code  # 默认用代码作名称
         # 尝试获取名称
@@ -278,9 +277,8 @@ def diagnose_portfolio(tool_context: ToolContext) -> dict:
                 if df is None or df.empty:
                     results.append({"code": code, "name": name, "error": "无行情数据"})
                     continue
-                col_map = {"日期": "date", "开盘": "open", "最高": "high",
-                            "最低": "low", "收盘": "close", "成交量": "volume"}
-                df = df.rename(columns=col_map)
+                from core.stock_cache import _COL_MAP
+                df = df.rename(columns=_COL_MAP)
                 d = diagnose_one_stock(code, name, cost, df)
                 results.append({
                     "code": d.code,
@@ -333,10 +331,8 @@ def get_stock_price(code: str, days: int = 30, tool_context: ToolContext = None)
         if df is None or df.empty:
             return {"error": f"无法获取 {code} 的行情数据"}
 
-        col_map = {"日期": "date", "开盘": "open", "最高": "high",
-                    "最低": "low", "收盘": "close", "成交量": "volume",
-                    "成交额": "amount", "涨跌幅": "pct_chg"}
-        df = df.rename(columns=col_map)
+        from core.stock_cache import _COL_MAP
+        df = df.rename(columns=_COL_MAP)
         df = df.tail(days)
 
         latest = df.iloc[-1] if len(df) > 0 else {}
@@ -549,9 +545,9 @@ def screen_stocks(board: str = "all", tool_context: ToolContext = None) -> dict:
             else:
                 os.environ["FUNNEL_POOL_BOARD"] = prev_board
 
-        metrics = details.get("metrics", {}) or {}
-        triggers = details.get("triggers", {}) or {}
-        name_map = details.get("name_map", {}) or {}
+        metrics = details.get("metrics") or {}
+        triggers = details.get("triggers") or {}
+        name_map = details.get("name_map") or {}
 
         trigger_summary = {}
         for trigger_name, rows in triggers.items():
@@ -771,9 +767,8 @@ def get_recommendation_tracking(limit: int = 20) -> dict:
             return {"message": "暂无推荐跟踪记录", "records": []}
 
         # 简化返回格式
-        simplified = []
-        for r in records[:limit]:
-            simplified.append({
+        simplified = [
+            {
                 "code": str(r.get("code", "")),
                 "name": str(r.get("name", "")),
                 "recommend_date": str(r.get("recommend_date", "")),
@@ -783,11 +778,12 @@ def get_recommendation_tracking(limit: int = 20) -> dict:
                 "max_pnl_pct": r.get("max_pnl_pct"),
                 "camp": str(r.get("camp", "")),
                 "status": str(r.get("status", "")),
-            })
+            }
+            for r in records
+        ]
 
         return {
-            "total": len(records),
-            "showing": len(simplified),
+            "total": len(simplified),
             "records": simplified,
         }
     except Exception as e:

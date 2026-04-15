@@ -9,6 +9,7 @@
 """
 from __future__ import annotations
 
+import inspect
 import json
 import logging
 from typing import Any
@@ -192,7 +193,6 @@ class ToolRegistry:
             return {"error": f"未知工具: {name}"}
 
         # 用副本注入 tool_context，避免污染原始 args（会被序列化进 messages）
-        import inspect
         call_args = dict(args)
         sig = inspect.signature(fn)
         if "tool_context" in sig.parameters:

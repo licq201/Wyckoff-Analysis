@@ -36,16 +36,8 @@ def _user_payload(user) -> dict | None:
     if user is None:
         return None
     if isinstance(user, dict):
-        return {
-            "id": user.get("id"),
-            "email": user.get("email"),
-        }
-    if hasattr(user, "model_dump"):
-        data = user.model_dump()
-        return {"id": data.get("id"), "email": data.get("email")}
-    if hasattr(user, "dict"):
-        data = user.dict()
-        return {"id": data.get("id"), "email": data.get("email")}
+        return {"id": user.get("id"), "email": user.get("email")}
+    # Pydantic v1/v2 及普通对象统一走 getattr
     return {"id": getattr(user, "id", None), "email": getattr(user, "email", None)}
 
 
