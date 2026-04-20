@@ -63,6 +63,7 @@ TOOL_DISPLAY_NAMES = {
     "search_stock_by_name": "搜索股票",
     "diagnose_stock": "个股诊断",
     "diagnose_portfolio": "持仓诊断",
+    "get_portfolio": "查看持仓",
     "get_stock_price": "查询行情",
     "get_market_overview": "大盘概览",
     "screen_stocks": "漏斗筛选",

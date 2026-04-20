@@ -145,6 +145,14 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
         },
     },
     {
+        "name": "get_portfolio",
+        "description": "查看用户当前持仓列表和可用资金。仅返回原始数据，不做诊断分析。用户问'我有什么持仓''持仓列表'时调用此工具。",
+        "parameters": {
+            "type": "object",
+            "properties": {},
+        },
+    },
+    {
         "name": "update_portfolio",
         "description": "管理用户持仓：新增、修改、删除持仓，或设置可用资金。操作后返回最新持仓状态。",
         "parameters": {
@@ -179,6 +187,7 @@ TOOL_DISPLAY_NAMES: dict[str, str] = {
     "generate_strategy_decision": "攻防决策",
     "get_recommendation_tracking": "战绩追踪",
     "get_signal_pending": "信号确认池",
+    "get_portfolio": "查看持仓",
     "update_portfolio": "调仓操作",
 }
 
@@ -209,6 +218,7 @@ class ToolRegistry:
             search_stock_by_name,
             diagnose_stock,
             diagnose_portfolio,
+            get_portfolio,
             get_stock_price,
             get_market_overview,
             screen_stocks,
@@ -222,6 +232,7 @@ class ToolRegistry:
             "search_stock_by_name": search_stock_by_name,
             "diagnose_stock": diagnose_stock,
             "diagnose_portfolio": diagnose_portfolio,
+            "get_portfolio": get_portfolio,
             "get_stock_price": get_stock_price,
             "get_market_overview": get_market_overview,
             "screen_stocks": screen_stocks,

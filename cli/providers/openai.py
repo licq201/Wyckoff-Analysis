@@ -93,6 +93,11 @@ class OpenAIProvider(LLMProvider):
 
             delta = chunk.choices[0].delta
 
+            # 推理模型（DeepSeek R1 / LongCat-Thinking 等）的思考过程
+            reasoning = getattr(delta, "reasoning_content", None)
+            if reasoning:
+                yield {"type": "thinking_delta", "text": reasoning}
+
             if delta.content:
                 text_buf += delta.content
                 yield {"type": "text_delta", "text": delta.content}

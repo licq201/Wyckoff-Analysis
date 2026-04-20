@@ -914,7 +914,61 @@ def _to_ts_code(code: str) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Tool 11: 持仓管理
+# Tool 11: 查看持仓（原子数据）
+# ---------------------------------------------------------------------------
+
+def get_portfolio(tool_context: ToolContext) -> dict:
+    """查看用户当前持仓列表和可用资金。仅返回原始数据，不做诊断分析。
+
+    Returns:
+        持仓列表和可用资金。
+    """
+    try:
+        from integrations.supabase_portfolio import (
+            build_user_live_portfolio_id,
+            load_portfolio_state,
+        )
+        from integrations.supabase_base import create_user_client
+
+        user_id = _get_user_id(tool_context)
+        if not user_id:
+            return {"error": "未登录，请先执行 /login"}
+
+        _at = (tool_context.state.get("access_token") or "") if tool_context else ""
+        _rt = (tool_context.state.get("refresh_token") or "") if tool_context else ""
+        _client = None
+        if _at:
+            _client = create_user_client(_at, _rt)
+            _refresh_tokens(_client, tool_context)
+
+        portfolio_id = build_user_live_portfolio_id(user_id)
+        state = load_portfolio_state(portfolio_id, client=_client)
+        if state is None:
+            return {"message": "未找到持仓记录", "positions": [], "free_cash": 0}
+
+        positions = []
+        for p in state.get("positions", []):
+            positions.append({
+                "code": p["code"],
+                "name": p.get("name", ""),
+                "shares": p.get("shares", 0),
+                "cost_price": p.get("cost", 0),
+                "buy_dt": p.get("buy_dt", ""),
+            })
+
+        return {
+            "portfolio_id": portfolio_id,
+            "free_cash": state.get("free_cash", 0),
+            "position_count": len(positions),
+            "positions": positions,
+        }
+    except Exception as e:
+        logger.exception("get_portfolio error")
+        return {"error": str(e)}
+
+
+# ---------------------------------------------------------------------------
+# Tool 12: 持仓管理
 # ---------------------------------------------------------------------------
 
 def update_portfolio(
@@ -1021,6 +1075,7 @@ WYCKOFF_TOOLS = [
     search_stock_by_name,
     diagnose_stock,
     diagnose_portfolio,
+    get_portfolio,
     get_stock_price,
     get_market_overview,
     screen_stocks,
