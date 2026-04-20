@@ -44,6 +44,47 @@ class StatusBar(Static):
     """
 
 
+_SPINNER = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
+
+
+class SpinnerBar(Static):
+    """思考中动态转圈指示器。"""
+
+    DEFAULT_CSS = """
+    SpinnerBar {
+        dock: bottom;
+        height: 1;
+        margin: 0 1;
+        color: $text-muted;
+    }
+    SpinnerBar.hidden { display: none; }
+    """
+
+    def __init__(self, **kwargs):
+        super().__init__("", **kwargs)
+        self._idx = 0
+        self._label = ""
+        self._timer = None
+
+    def start(self, label: str = "思考中") -> None:
+        self._label = label
+        self._idx = 0
+        self.update(f"  {_SPINNER[0]} {label}")
+        self.remove_class("hidden")
+        if self._timer is None:
+            self._timer = self.set_interval(0.08, self._tick)
+
+    def stop(self) -> None:
+        if self._timer is not None:
+            self._timer.stop()
+            self._timer = None
+        self.add_class("hidden")
+
+    def _tick(self) -> None:
+        self._idx = (self._idx + 1) % len(_SPINNER)
+        self.update(f"  {_SPINNER[self._idx]} {self._label}")
+
+
 # ---------------------------------------------------------------------------
 # 交互式输入状态机（/login, /model）
 # ---------------------------------------------------------------------------
@@ -117,6 +158,7 @@ class WyckoffTUI(App):
     def compose(self) -> ComposeResult:
         yield StatusBar(self._build_status_text(), id="status-bar")
         yield ChatLog(id="chat-log", highlight=True, markup=True, wrap=True)
+        yield SpinnerBar(id="spinner", classes="hidden")
         yield Input(placeholder="问我关于股票的任何问题... (/help 查看命令)", id="chat-input")
 
     def on_mount(self) -> None:
@@ -408,8 +450,13 @@ class WyckoffTUI(App):
         def _scroll():
             self.call_from_thread(log.scroll_end, animate=False)
 
-        _write(Text.from_markup("  [dim]思考中...[/dim]"))
-        _scroll()
+        def _spinner_start(label="思考中"):
+            self.call_from_thread(self.query_one("#spinner", SpinnerBar).start, label)
+
+        def _spinner_stop():
+            self.call_from_thread(self.query_one("#spinner", SpinnerBar).stop)
+
+        _spinner_start()
 
         total_input = 0
         total_output = 0
@@ -425,8 +472,7 @@ class WyckoffTUI(App):
                 round_usage = {}
 
                 if round_idx > 0:
-                    _write(Text.from_markup("  [dim]思考中...[/dim]"))
-                    _scroll()
+                    _spinner_start()
 
                 for chunk in self._provider.chat_stream(
                     self._messages, self._tools.schemas(), self._system_prompt
@@ -446,6 +492,7 @@ class WyckoffTUI(App):
                     elif chunk["type"] == "usage":
                         round_usage = chunk
 
+                _spinner_stop()
                 total_input += round_usage.get("input_tokens", 0)
                 total_output += round_usage.get("output_tokens", 0)
 
@@ -526,6 +573,7 @@ class WyckoffTUI(App):
                 _write(Text.from_markup("[yellow](工具调用轮次超限)[/yellow]"))
 
         except Exception as e:
+            _spinner_stop()
             err = str(e)
             # 清理 HTML 错误响应，只保留关键信息
             if "<html" in err.lower():
