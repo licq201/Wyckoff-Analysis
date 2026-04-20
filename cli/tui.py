@@ -408,6 +408,9 @@ class WyckoffTUI(App):
         def _scroll():
             self.call_from_thread(log.scroll_end, animate=False)
 
+        _write(Text.from_markup("  [dim]思考中...[/dim]"))
+        _scroll()
+
         total_input = 0
         total_output = 0
         t_start = time.monotonic()

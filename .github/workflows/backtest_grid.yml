@@ -475,9 +475,9 @@ jobs:
           for sf in summaries:
               dirname = os.path.basename(os.path.dirname(sf))
               m_hold = re.search(r'h(\d+)', dirname)
-              m_sl = re.search(r'sl(\d+)', dirname)
+              m_sl = re.search(r'sl-?(\d+)', dirname)
               m_tp = re.search(r'tp(\d+)', dirname)
-              m_tr = re.search(r'tr(\d+)', dirname)
+              m_tr = re.search(r'tr-?(\d+)', dirname)
               if not m_hold or not m_sl:
                   continue
               with open(sf, 'r') as f:
