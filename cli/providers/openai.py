@@ -122,6 +122,27 @@ class OpenAIProvider(LLMProvider):
                         if tc_delta.function.arguments:
                             tool_map[idx]["args_json"] += tc_delta.function.arguments
 
+        # 兜底：某些模型（如 kimi-k2 via NVIDIA）会把 tool call 输出为文本标签
+        if not tool_map and "<tool_call>" in text_buf:
+            import re
+            for m in re.finditer(
+                r"<tool_call>\s*\{.*?\"name\"\s*:\s*\"([^\"]+)\".*?\"arguments\"\s*:\s*(\{.*?\})\s*\}\s*</tool_call>",
+                text_buf, re.DOTALL,
+            ):
+                fname, fargs_str = m.group(1), m.group(2)
+                try:
+                    fargs = json.loads(fargs_str)
+                except json.JSONDecodeError:
+                    fargs = {}
+                tool_map[len(tool_map)] = {
+                    "id": f"text_tc_{len(tool_map)}",
+                    "name": fname,
+                    "args_json": json.dumps(fargs, ensure_ascii=False),
+                }
+            if tool_map:
+                # 移除文本中的 tool_call 标签
+                text_buf = re.sub(r"<tool_call>.*?</tool_call>", "", text_buf, flags=re.DOTALL).strip()
+
         if tool_map:
             tool_calls = []
             for idx in sorted(tool_map):

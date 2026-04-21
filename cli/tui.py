@@ -443,15 +443,13 @@ class WyckoffTUI(App):
         if not configs:
             log.write(Text.from_markup("[dim]尚无模型配置，使用 /model add 添加[/dim]"))
             return
-        log.write(Text.from_markup("\n[bold]已配置模型[/bold]"))
+        log.write(Text.from_markup("\n[bold]已配置模型[/bold] [dim](↑↓选择 Enter确认 Esc取消)[/dim]"))
         for c in configs:
             mark = " [green]⭐ 默认[/green]" if c["id"] == default_id else ""
             log.write(Text.from_markup(
                 f"  [bold]{c['id']}[/bold] — {c['provider_name']}/{c.get('model', '?')}{mark}"
             ))
-        log.write(Text.from_markup(
-            "[dim]  /model add | /model rm <id> | /model default <id>[/dim]"
-        ))
+        self._switch_model_selector()
 
     def _remove_model(self, model_id: str) -> None:
         log = self.query_one("#chat-log", ChatLog)
