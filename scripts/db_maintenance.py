@@ -64,32 +64,35 @@ def cleanup_unadjusted_cache(client) -> tuple[bool, str]:
         client.table(TABLE_STOCK_HIST_CACHE).delete().eq("adjust", "none").execute()
         return True, "cleaned adjust=none rows"
     except Exception as first_err:
-        batch_size = max(int(os.getenv("STOCK_CACHE_CLEANUP_SYMBOL_BATCH", "300")), 1)
-        max_rounds = max(int(os.getenv("STOCK_CACHE_CLEANUP_MAX_ROUNDS", "200")), 1)
-        deleted_symbols = 0
-        for _ in range(max_rounds):
-            probe = (
-                client.table(TABLE_STOCK_HIST_CACHE)
-                .select("symbol")
-                .eq("adjust", "none")
-                .limit(batch_size)
-                .execute()
-            )
-            symbols = sorted(
-                {
-                    str(r.get("symbol", "")).strip()
-                    for r in (probe.data or [])
-                    if str(r.get("symbol", "")).strip()
-                }
-            )
-            if not symbols:
-                return True, f"cleaned adjust=none (batched, symbols={deleted_symbols})"
-            for sym in symbols:
-                client.table(TABLE_STOCK_HIST_CACHE).delete().eq("adjust", "none").eq(
-                    "symbol", sym
-                ).execute()
-                deleted_symbols += 1
-        return False, f"partial cleanup, deleted_symbols={deleted_symbols}, first_err={first_err}"
+        try:
+            batch_size = max(int(os.getenv("STOCK_CACHE_CLEANUP_SYMBOL_BATCH", "300")), 1)
+            max_rounds = max(int(os.getenv("STOCK_CACHE_CLEANUP_MAX_ROUNDS", "200")), 1)
+            deleted_symbols = 0
+            for _ in range(max_rounds):
+                probe = (
+                    client.table(TABLE_STOCK_HIST_CACHE)
+                    .select("symbol")
+                    .eq("adjust", "none")
+                    .limit(batch_size)
+                    .execute()
+                )
+                symbols = sorted(
+                    {
+                        str(r.get("symbol", "")).strip()
+                        for r in (probe.data or [])
+                        if str(r.get("symbol", "")).strip()
+                    }
+                )
+                if not symbols:
+                    return True, f"cleaned adjust=none (batched, symbols={deleted_symbols})"
+                for sym in symbols:
+                    client.table(TABLE_STOCK_HIST_CACHE).delete().eq("adjust", "none").eq(
+                        "symbol", sym
+                    ).execute()
+                    deleted_symbols += 1
+            return False, f"partial cleanup, deleted_symbols={deleted_symbols}, first_err={first_err}"
+        except Exception as batch_err:
+            return False, f"batch cleanup also failed: {batch_err} (original: {first_err})"
 
 
 def main() -> int:

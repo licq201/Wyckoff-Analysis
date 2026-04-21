@@ -250,6 +250,8 @@ def diagnose_portfolio(tool_context: ToolContext) -> dict:
 
         _user_client = _get_user_client(tool_context)
         state = load_portfolio_state(portfolio_id, client=_user_client)
+        if state is None and _user_client is not None:
+            state = load_portfolio_state(portfolio_id)
         if state is None:
             from integrations.supabase_portfolio import is_supabase_configured
             if not is_supabase_configured():
@@ -914,9 +916,11 @@ def get_portfolio(tool_context: ToolContext) -> dict:
         if not user_id:
             return {"error": "未登录，请先执行 /login"}
 
-        _client = _get_user_client(tool_context)
         portfolio_id = build_user_live_portfolio_id(user_id)
+        _client = _get_user_client(tool_context)
         state = load_portfolio_state(portfolio_id, client=_client)
+        if state is None and _client is not None:
+            state = load_portfolio_state(portfolio_id)
         if state is None:
             return {"message": "未找到持仓记录", "positions": [], "free_cash": 0}
 

@@ -85,7 +85,7 @@ class FloatingSelector(OptionList):
     FloatingSelector {
         dock: bottom;
         height: auto;
-        max-height: 8;
+        max-height: 50%;
         margin: 0 1;
         border: round $accent;
         background: $surface;
