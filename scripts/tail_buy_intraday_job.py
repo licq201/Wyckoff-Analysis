@@ -117,6 +117,19 @@ def _env_flag(name: str, default: bool = False) -> bool:
     return raw in {"1", "true", "yes", "on"}
 
 
+def _default_tail_buy_portfolio_id() -> str:
+    direct = str(os.getenv("TAIL_BUY_PORTFOLIO_ID", "") or "").strip()
+    if direct:
+        return direct
+    user_id = str(os.getenv("SUPABASE_USER_ID", "") or "").strip()
+    if user_id:
+        return f"USER_LIVE:{user_id}"
+    monitor = str(os.getenv("MONITOR_PORTFOLIO_ID", "") or "").strip()
+    if monitor:
+        return monitor
+    return "USER_LIVE"
+
+
 def _plan_intraday_scan_budget(
     total_candidates: int,
     *,
@@ -1058,11 +1071,7 @@ def main() -> int:
     parser.add_argument("--deadline-minute", type=int, default=int(os.getenv("TAIL_BUY_TASK_TIMEOUT_MIN", "25")))
     parser.add_argument(
         "--portfolio-id",
-        default=(
-            os.getenv("TAIL_BUY_PORTFOLIO_ID")
-            or os.getenv("MONITOR_PORTFOLIO_ID")
-            or "USER_LIVE"
-        ),
+        default=_default_tail_buy_portfolio_id(),
     )
     parser.add_argument("--logs", default=None, help="日志路径")
     args = parser.parse_args()
