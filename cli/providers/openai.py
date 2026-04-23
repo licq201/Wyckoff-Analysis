@@ -45,6 +45,7 @@ class OpenAIProvider(LLMProvider):
         }
         if oai_tools:
             kwargs["tools"] = oai_tools
+            kwargs["tool_choice"] = "auto"
 
         response = self._client.chat.completions.create(**kwargs)
         result = self._parse_response(response)
@@ -72,6 +73,7 @@ class OpenAIProvider(LLMProvider):
         }
         if oai_tools:
             kwargs["tools"] = oai_tools
+            kwargs["tool_choice"] = "auto"
 
         tool_map: dict[int, dict] = {}  # index → {id, name, args_json}
         text_buf = ""
@@ -81,9 +83,13 @@ class OpenAIProvider(LLMProvider):
         try:
             stream = self._client.chat.completions.create(**kwargs)
         except Exception:
-            # 某些第三方端点不支持 stream_options，去掉后重试
+            # 某些第三方端点不支持 stream_options 或 tool_choice，逐个去掉后重试
             kwargs.pop("stream_options", None)
-            stream = self._client.chat.completions.create(**kwargs)
+            try:
+                stream = self._client.chat.completions.create(**kwargs)
+            except Exception:
+                kwargs.pop("tool_choice", None)
+                stream = self._client.chat.completions.create(**kwargs)
 
         for chunk in stream:
             if not chunk.choices and chunk.usage:
