@@ -374,11 +374,13 @@ jobs:
             --board "${BT_BOARD}" \
             --sample-size "${BT_SAMPLE_SIZE}" \
             --trading-days "${BT_TRADING_DAYS}" \
+            --use-current-meta \
             --exit-mode sltp \
             --stop-loss "${STOP}" \
             --take-profit "${TP}" \
             --sltp-priority stop_first \
             --pending-mode both \
+            --pending-merge-order funnel_first \
             --trailing-stop "${TRAIL}" \
             --snapshot-dir snapshot_data \
             --output-dir "${OUT_DIR}" \
@@ -460,7 +462,7 @@ jobs:
               print(f'send_backtest_card: {ok}')
               exit(0)
 
-          # --- 多单元 grid：用 column_set 原生组件 ---
+          # --- 多单元 grid：紧凑视觉卡片 ---
           def extract(content, keyword):
               for line in content.split('\n'):
                   if keyword in line:
@@ -496,6 +498,36 @@ jobs:
           def fmt(v, spec):
               return format(v, spec) if v is not None else '-'
 
+          def sharp_flag(v):
+              if v is None:
+                  return '⚪'
+              if v >= 0.6:
+                  return '🟢'
+              if v >= 0.2:
+                  return '🟡'
+              if v >= 0:
+                  return '🟠'
+              return '🔴'
+
+          def risk_comment(c):
+              if not c:
+                  return '无有效样本'
+              s = c.get('sharpe')
+              avg = c.get('avg')
+              mdd = c.get('mdd')
+              notes = []
+              if s is not None and s < 0:
+                  notes.append('风险收益比偏弱')
+              elif s is not None and s < 0.2:
+                  notes.append('边际优势较薄')
+              else:
+                  notes.append('风险收益尚可')
+              if avg is not None and avg < 0:
+                  notes.append('单笔期望为负')
+              if mdd is not None and mdd <= -15:
+                  notes.append('回撤较大')
+              return '；'.join(notes[:2]) if notes else '指标平衡'
+
           elements = []
           run_url = os.environ.get('RUN_URL', '')
           bt_start = os.environ.get('BT_START', '?')
@@ -510,9 +542,15 @@ jobs:
               elements.append({'tag': 'div', 'text': {'tag': 'lark_md', 'content': '⚠️ 未找到回测结果文件'}})
           else:
               valid = [c for c in cells if c.get('sharpe') is not None]
-              best = max(valid, key=lambda c: c['sharpe']) if valid else None
+              if not valid:
+                  elements.append({'tag': 'hr'})
+                  elements.append({'tag': 'div', 'text': {'tag': 'lark_md', 'content': '⚠️ 结果文件存在，但未解析到有效夏普指标'}})
+              else:
+                  best = max(valid, key=lambda c: c['sharpe'])
+                  ranked = sorted(valid, key=lambda c: c['sharpe'], reverse=True)
+                  pos_cnt = sum(1 for c in valid if (c.get('sharpe') or 0) > 0)
+                  neg_cnt = sum(1 for c in valid if (c.get('sharpe') or 0) <= 0)
 
-              if best:
                   elements.append({'tag': 'hr'})
                   bs = best.get('sharpe', 0) or 0
                   tag = '🏆' if bs > 0 else '📌'
@@ -522,7 +560,7 @@ jobs:
                       'content': f'{tag} **最优参数**: 持有{best["hold"]}天 / SL-{best["sl"]}% / {tp_str} / {tr_str}'}})
 
                   cols = [
-                      ('**夏普**', f'{fmt(best.get("sharpe"), ".3f")}'),
+                      ('**夏普**', f'{sharp_flag(best.get("sharpe"))} {fmt(best.get("sharpe"), ".3f")}'),
                       ('**胜率**', f'{fmt(best.get("win"), ".1f")}%'),
                       ('**均收**', f'{fmt(best.get("avg"), "+.2f")}%'),
                       ('**回撤**', f'{fmt(best.get("mdd"), ".1f")}%'),
@@ -535,56 +573,101 @@ jobs:
                           ]} for label, val in cols
                       ]})
 
-              # Top-10 排行（用文本列表代替 pipe table）
-              elements.append({'tag': 'hr'})
-              ranked = sorted(valid, key=lambda c: c['sharpe'], reverse=True)[:10]
-              rank_lines = ['**夏普 Top-10 参数组合**', '']
-              for i, c in enumerate(ranked, 1):
-                  is_best = best and c['hold'] == best['hold'] and c['sl'] == best['sl'] and c['tp'] == best.get('tp') and c['tr'] == best.get('tr')
-                  mark = ' 🏆' if is_best else ''
-                  tp_s = f'TP{c["tp"]}%' if c['tp'] else '无TP'
-                  tr_s = f'Trail-{c["tr"]}%' if c['tr'] else '无Trail'
-                  rank_lines.append(
-                      f'{i}. **{c["hold"]}天/SL-{c["sl"]}%/{tp_s}/{tr_s}**{mark}\n'
-                      f'    夏普{fmt(c.get("sharpe"), ".3f")}  胜率{fmt(c.get("win"), ".1f")}%  '
-                      f'均收{fmt(c.get("avg"), "+.2f")}%  回撤{fmt(c.get("mdd"), ".1f")}%  '
-                      f'{int(c.get("trades") or 0)}笔')
-              elements.append({'tag': 'div', 'text': {'tag': 'lark_md', 'content': '\n'.join(rank_lines)}})
-
-              # 夏普矩阵（用 column_set 模拟）
-              holds = sorted(set(c['hold'] for c in cells))
-              sls = sorted(set(c['sl'] for c in cells))
-              agg = {}
-              for c in cells:
-                  key = (c['hold'], c['sl'])
-                  if c.get('sharpe') is not None:
-                      if key not in agg or c['sharpe'] > agg[key]['sharpe']:
-                          agg[key] = c
-
-              if len(holds) > 1 and len(sls) > 1:
-                  elements.append({'tag': 'hr'})
                   elements.append({'tag': 'div', 'text': {'tag': 'lark_md',
-                      'content': '**最优夏普矩阵** (每格取 TP/Trail 最优)'}})
-                  # Header row
-                  hdr_cols = [{'tag': 'column', 'width': 'weighted', 'weight': 1, 'elements': [
-                      {'tag': 'div', 'text': {'tag': 'lark_md', 'content': '**持有\\\\SL**'}}]}]
-                  for s in sls:
-                      hdr_cols.append({'tag': 'column', 'width': 'weighted', 'weight': 1, 'elements': [
-                          {'tag': 'div', 'text': {'tag': 'lark_md', 'content': f'**-{s}%**'}}]})
-                  elements.append({'tag': 'column_set', 'flex_mode': 'stretch',
-                      'background_style': 'grey', 'columns': hdr_cols})
-                  # Data rows
-                  for h in holds:
-                      row_cols = [{'tag': 'column', 'width': 'weighted', 'weight': 1, 'elements': [
-                          {'tag': 'div', 'text': {'tag': 'lark_md', 'content': f'**{h}天**'}}]}]
+                      'content': f'**策略体检**: {risk_comment(best)}  ·  正夏普组合 {pos_cnt} / 负夏普组合 {neg_cnt}'}})
+
+                  # 参数梯队（完整表格：展示全部组合）
+                  elements.append({'tag': 'hr'})
+                  elements.append({'tag': 'div', 'text': {'tag': 'lark_md', 'content': f'**参数梯队表（共 {len(ranked)} 组）**'}})
+
+                  header_cols = [
+                      ('**#**', 1),
+                      ('**参数组合**', 4),
+                      ('**夏普**', 2),
+                      ('**胜率**', 2),
+                      ('**均收**', 2),
+                      ('**回撤**', 2),
+                      ('**样本**', 2),
+                  ]
+                  elements.append({
+                      'tag': 'column_set',
+                      'flex_mode': 'stretch',
+                      'background_style': 'grey',
+                      'columns': [
+                          {
+                              'tag': 'column',
+                              'width': 'weighted',
+                              'weight': w,
+                              'elements': [{'tag': 'div', 'text': {'tag': 'lark_md', 'content': t}}],
+                          }
+                          for t, w in header_cols
+                      ],
+                  })
+
+                  for i, c in enumerate(ranked, 1):
+                      is_best = c['hold'] == best['hold'] and c['sl'] == best['sl'] and c['tp'] == best.get('tp') and c['tr'] == best.get('tr')
+                      mark = '🏆' if is_best else ''
+                      tp_s = f'TP{c["tp"]}%' if c['tp'] else '无TP'
+                      tr_s = f'Trail-{c["tr"]}%' if c['tr'] else '无Trail'
+                      combo = f'{c["hold"]}天 / SL-{c["sl"]}% / {tp_s} / {tr_s}'
+                      sharpe_v = f'{sharp_flag(c.get("sharpe"))} {fmt(c.get("sharpe"), ".3f")}{(" " + mark) if mark else ""}'
+                      row = [
+                          (str(i), 1),
+                          (combo, 4),
+                          (sharpe_v, 2),
+                          (f'{fmt(c.get("win"), ".1f")}%', 2),
+                          (f'{fmt(c.get("avg"), "+.2f")}%', 2),
+                          (f'{fmt(c.get("mdd"), ".1f")}%', 2),
+                          (f'{int(c.get("trades") or 0)}笔', 2),
+                      ]
+                      elements.append({
+                          'tag': 'column_set',
+                          'flex_mode': 'stretch',
+                          'columns': [
+                              {
+                                  'tag': 'column',
+                                  'width': 'weighted',
+                                  'weight': w,
+                                  'elements': [{'tag': 'div', 'text': {'tag': 'lark_md', 'content': txt}}],
+                              }
+                              for txt, w in row
+                          ],
+                      })
+
+                  # 夏普矩阵（每格取 TP/Trail 最优）
+                  holds = sorted(set(c['hold'] for c in cells))
+                  sls = sorted(set(c['sl'] for c in cells))
+                  agg = {}
+                  for c in cells:
+                      key = (c['hold'], c['sl'])
+                      if c.get('sharpe') is not None:
+                          if key not in agg or c['sharpe'] > agg[key]['sharpe']:
+                              agg[key] = c
+
+                  if len(holds) > 1 and len(sls) > 1:
+                      elements.append({'tag': 'hr'})
+                      elements.append({'tag': 'div', 'text': {'tag': 'lark_md',
+                          'content': '**最优夏普矩阵** (每格取 TP/Trail 最优)'}})
+                      # Header row
+                      hdr_cols = [{'tag': 'column', 'width': 'weighted', 'weight': 1, 'elements': [
+                          {'tag': 'div', 'text': {'tag': 'lark_md', 'content': '**持有\\\\SL**'}}]}]
                       for s in sls:
-                          c = agg.get((h, s))
-                          v = fmt(c.get('sharpe') if c else None, '.3f')
-                          is_b = best and c and c.get('hold') == best.get('hold') and c.get('sl') == best.get('sl') and c.get('tp') == best.get('tp') and c.get('tr') == best.get('tr')
-                          cell_text = f'**{v}** 🏆' if is_b and v != '-' else v
-                          row_cols.append({'tag': 'column', 'width': 'weighted', 'weight': 1, 'elements': [
-                              {'tag': 'div', 'text': {'tag': 'lark_md', 'content': cell_text}}]})
-                      elements.append({'tag': 'column_set', 'flex_mode': 'stretch', 'columns': row_cols})
+                          hdr_cols.append({'tag': 'column', 'width': 'weighted', 'weight': 1, 'elements': [
+                              {'tag': 'div', 'text': {'tag': 'lark_md', 'content': f'**-{s}%**'}}]})
+                      elements.append({'tag': 'column_set', 'flex_mode': 'stretch',
+                          'background_style': 'grey', 'columns': hdr_cols})
+                      # Data rows
+                      for h in holds:
+                          row_cols = [{'tag': 'column', 'width': 'weighted', 'weight': 1, 'elements': [
+                              {'tag': 'div', 'text': {'tag': 'lark_md', 'content': f'**{h}天**'}}]}]
+                          for s in sls:
+                              c = agg.get((h, s))
+                              v = fmt(c.get('sharpe') if c else None, '.3f')
+                              is_b = c and c.get('hold') == best.get('hold') and c.get('sl') == best.get('sl') and c.get('tp') == best.get('tp') and c.get('tr') == best.get('tr')
+                              cell_text = f'**{v}** 🏆' if is_b and v != '-' else v
+                              row_cols.append({'tag': 'column', 'width': 'weighted', 'weight': 1, 'elements': [
+                                  {'tag': 'div', 'text': {'tag': 'lark_md', 'content': cell_text}}]})
+                          elements.append({'tag': 'column_set', 'flex_mode': 'stretch', 'columns': row_cols})
 
           template = 'blue' if (best and (best.get('sharpe') or 0) > 0) else 'orange' if cells else 'red'
           payload = {

@@ -8,7 +8,7 @@
 3) 输出 summary markdown + trades csv，便于后续参数复盘。
 
 重要说明：
-- 默认关闭“当前截面市值/行业映射”过滤，以降低 look-ahead bias。
+- 默认按生产口径开启“当前截面市值/行业映射”过滤，便于回测结果对齐实盘行为。
 - 仍存在幸存者偏差（股票池基于当前在市样本），结果用于参数对比而非绝对收益承诺。
 """
 
@@ -19,7 +19,6 @@ import bisect
 import os
 import sys
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from dataclasses import fields as dataclass_fields
 from dataclasses import replace
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
@@ -47,6 +46,7 @@ from core.funnel_pipeline import (
     rank_l3_candidates,
 )
 from core.signal_confirmation import PendingPool
+from tools.funnel_config import apply_funnel_cfg_overrides as _shared_apply_funnel_cfg_overrides
 
 DEFAULT_HOLD_DAYS = 30  # 网格优化：30天夏普2.493 > 25天1.967 > 20天1.413
 DEFAULT_EXIT_MODE = "sltp"
@@ -61,9 +61,15 @@ DEFAULT_ATR_MULTIPLIER = 2.0         # 实盘 STEP4_ATR_MULTIPLIER = 2.0
 DEFAULT_ATR_HARD_STOP_PCT = -9.0     # 极限止损地板(%)，实盘 STEP4_BUY_HARD_STOP_PCT = 9.0
 DEFAULT_ATR_MAX_HOLD_DAYS = 120      # ATR 模式下最大持有天数（安全网）
 
-DEFAULT_USE_CURRENT_META = False
+DEFAULT_USE_CURRENT_META = True
 DEFAULT_BUY_FRICTION_PCT = float(os.getenv("BACKTEST_BUY_FRICTION_PCT", "0.5"))
 DEFAULT_SELL_FRICTION_PCT = float(os.getenv("BACKTEST_SELL_FRICTION_PCT", "0.5"))
+BACKTEST_CACHE_ONLY_FIRST = os.getenv("BACKTEST_CACHE_ONLY_FIRST", "").strip().lower() in {
+    "1",
+    "true",
+    "yes",
+    "on",
+}
 
 # ── 大盘水温仓位控制 ──
 # 回测数据显示 NEUTRAL 下策略盈利（+1.17%），CRASH/RISK_ON 下亏损严重。
@@ -264,28 +270,7 @@ def _apply_funnel_cfg_overrides(cfg: FunnelConfig) -> None:
     """
     与生产漏斗同口径：读取 FUNNEL_CFG_* 环境变量覆盖 FunnelConfig。
     """
-    for f in dataclass_fields(FunnelConfig):
-        key = f"FUNNEL_CFG_{f.name.upper()}"
-        raw = os.getenv(key)
-        if raw is None:
-            continue
-        val = str(raw).strip()
-        if not val:
-            continue
-        try:
-            current = getattr(cfg, f.name, None)
-            if isinstance(current, bool):
-                parsed = val.lower() in {"1", "true", "yes", "on"}
-            elif isinstance(current, int) and not isinstance(current, bool):
-                parsed = int(float(val))
-            elif isinstance(current, float):
-                parsed = float(val)
-            else:
-                parsed = val
-            setattr(cfg, f.name, parsed)
-        except Exception:
-            # 回测不中断，保留原值
-            pass
+    _shared_apply_funnel_cfg_overrides(cfg)
 
 
 def _fetch_hist_norm(
@@ -294,20 +279,41 @@ def _fetch_hist_norm(
     end_dt: date,
 ) -> tuple[str, pd.DataFrame | None, str | None]:
     try:
-        # 优先走 Supabase 缓存（cache_only：只读缓存，不回 tushare 补缺口）
+        # 与生产口径对齐：默认允许 stock_repo 补缺口（cache_only=False）。
+        # 若需提速可设置 BACKTEST_CACHE_ONLY_FIRST=1 优先只读缓存。
         try:
             from integrations.stock_hist_repository import get_stock_hist as _cached
-            raw = _cached(
-                symbol=symbol,
-                start_date=start_dt,
-                end_date=end_dt,
-                adjust="qfq",
-                context="background",
-                cache_only=True,
-            )
+            raw = None
+            if BACKTEST_CACHE_ONLY_FIRST:
+                raw = _cached(
+                    symbol=symbol,
+                    start_date=start_dt,
+                    end_date=end_dt,
+                    adjust="qfq",
+                    context="background",
+                    cache_only=True,
+                )
+                if raw is None or raw.empty:
+                    raw = _cached(
+                        symbol=symbol,
+                        start_date=start_dt,
+                        end_date=end_dt,
+                        adjust="qfq",
+                        context="background",
+                        cache_only=False,
+                    )
+            else:
+                raw = _cached(
+                    symbol=symbol,
+                    start_date=start_dt,
+                    end_date=end_dt,
+                    adjust="qfq",
+                    context="background",
+                    cache_only=False,
+                )
         except Exception:
             raw = None
-        # 仅当缓存完全无数据时 fallback 到直连数据源
+        # 兜底：repo 异常或无数据时直连数据源
         if raw is None or raw.empty:
             raw = fetch_stock_hist(symbol, start_dt, end_dt, adjust="qfq")
         df = normalize_hist_from_fetch(raw)
@@ -562,12 +568,15 @@ def run_backtest(
     sell_friction_pct: float = DEFAULT_SELL_FRICTION_PCT,
     regime_filter: bool = False,
     pending_mode: str = "both",
+    pending_merge_order: str = "funnel_first",
     atr_period: int = DEFAULT_ATR_PERIOD,
     atr_multiplier: float = DEFAULT_ATR_MULTIPLIER,
     atr_hard_stop_pct: float = DEFAULT_ATR_HARD_STOP_PCT,
 ) -> tuple[pd.DataFrame, dict]:
     if pending_mode not in {"off", "only", "both"}:
         raise ValueError("pending_mode 必须是 off / only / both")
+    if pending_merge_order not in {"funnel_first", "confirmed_first"}:
+        raise ValueError("pending_merge_order 必须是 funnel_first 或 confirmed_first")
     if end_dt <= start_dt:
         raise ValueError("end 必须晚于 start")
     if hold_days < 1:
@@ -778,8 +787,13 @@ def run_backtest(
             p_score_map.update(confirmed_score_map)
             track_map.update(confirmed_track_map)
         elif pending_mode == "both":
-            seen = set(confirmed_codes)
-            merged = list(confirmed_codes) + [c for c in selected_for_ai if c not in seen]
+            # 对齐生产链路顺序（Step2 候选在前，Step2.5 confirmed 追加）
+            if pending_merge_order == "confirmed_first":
+                seen = set(confirmed_codes)
+                merged = list(confirmed_codes) + [c for c in selected_for_ai if c not in seen]
+            else:
+                seen = set(selected_for_ai)
+                merged = list(selected_for_ai) + [c for c in confirmed_codes if c not in seen]
             if not merged:
                 continue
             ranked_codes = merged if int(top_n) <= 0 else merged[:top_n]
@@ -1047,7 +1061,9 @@ def run_backtest(
         "sell_friction_pct": float(sell_friction_pct),
         "regime_filter": bool(regime_filter),
         "pending_mode": pending_mode,
+        "pending_merge_order": pending_merge_order,
         "pending_confirmed_total": pending_confirmed_total,
+        "cache_only_first": bool(BACKTEST_CACHE_ONLY_FIRST),
     }
     if not trades_df.empty:
         ret = pd.to_numeric(trades_df["ret_pct"], errors="coerce").dropna()
@@ -1827,6 +1843,12 @@ def main() -> int:
         default="both",
         help="信号确认模式: off=直接用L4信号, only=仅用确认后信号, both=两者合并(默认, 与生产链路对齐)",
     )
+    parser.add_argument(
+        "--pending-merge-order",
+        choices=["funnel_first", "confirmed_first"],
+        default="funnel_first",
+        help="pending_mode=both 时合并顺序：funnel_first=Step2在前(对齐生产)，confirmed_first=确认池在前(旧口径)",
+    )
     args = parser.parse_args()
 
     start_dt = _parse_date(args.start)
@@ -1866,6 +1888,7 @@ def main() -> int:
                 sell_friction_pct=args.sell_friction_pct,
                 regime_filter=args.regime_filter,
                 pending_mode=args.pending_mode,
+                pending_merge_order=args.pending_merge_order,
                 atr_period=args.atr_period,
                 atr_multiplier=args.atr_multiplier,
                 atr_hard_stop_pct=args.atr_hard_stop,
