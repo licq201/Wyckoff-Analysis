@@ -38,12 +38,28 @@ jobs:
       SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
       SUPABASE_USER_ID: ${{ secrets.SUPABASE_USER_ID }}
       STEP4_BUY_HARD_STOP_ENABLED: "1"
-      STEP4_BUY_HARD_STOP_PCT: "12.0"
+      # 止损 12% -> 5%。生产回测（66 交易日/123 笔/含真实成本）四档单调：
+      #   无止损  总收益 -16.49%  夏普 -1.965  回撤 -24.69%  VaR95 -22.14%
+      #   -12%    总收益  -5.71%  夏普 -0.794  回撤 -14.51%  VaR95 -12.18%（原实盘值）
+      #   -8%     总收益  +0.04%  夏普 -0.068  回撤 -10.22%  VaR95  -9.70%
+      #   -5%     总收益  +7.31%  夏普 +0.871  回撤  -7.25%  VaR95  -9.69%
+      # 代价是胜率由 46.34% 降到 37.40%——机制是用更多小亏换掉少数巨亏，
+      # 收益来自「没有大亏」而非「多赚」，故执行纪律不能中途干预。
+      STEP4_BUY_HARD_STOP_PCT: "5.0"
       STEP4_BUY_STOP_MODE: "floor"
       STEP4_PROBE_BUDGET_LIMIT: "0.10"
       STEP4_ATTACK_BUDGET_LIMIT: "0.20"
       STEP4_BUY_BLOCK_REGIMES: UNKNOWN,NEUTRAL,PANIC_REPAIR,RISK_OFF,CRASH,BLACK_SWAN
-      STEP4_BUY_ALLOW_REGIMES: BEAR_REBOUND,RISK_ON
+      # RISK_ON 已从豁免名单移除（移除后自动回落到代码默认禁买集）。
+      # 此前依「联动实测 +6.07pct（3/3 为正）」放开，但那只有 3 个样本日。
+      # 两次独立的跨周期回测均显示该档为负，且样本在扩大后更差：
+      #   2026-08-21 六个月网格：4 笔  胜率 25.0%  均收 -2.96%
+      #   2026-08-22 六周期网格：6 笔  胜率 16.7%  均收 -5.03%（中位 -6.81%）
+      # 回测生成的交易手册亦明确写「RISK_ON 禁止新仓｜生产市场闸门固定禁止，
+      # 不以近期样本收益解禁」。样本仍偏小（6 笔），但两次同向为负、方向与放开依据相反，
+      # 且禁买是保守侧，故先恢复禁买。
+      STEP4_BUY_ALLOW_REGIMES: BEAR_REBOUND
+      STEP4_BLOCK_BUY_SIGNAL_TYPES: ""
       STEP4_REQUIRE_CONFIRMED_BUY_CANDIDATE: "1"
       STEP4_RECOMMEND_DATE: ${{ github.event.inputs.recommend_date }}
 

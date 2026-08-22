@@ -2,6 +2,10 @@
 
 本文档汇总了 Wyckoff-Analysis 项目中涉及的所有金融术语、量化指标和策略概念，帮助新同学快速理解系统逻辑。
 
+### 午间独立研究扫描
+
+工作日 11:30 运行的全 A 股只读研究任务，与盘后 Wyckoff 漏斗相互独立。一次运行内按“有效横截面 → 可成交池 → 六通道实时注意力池 → 深度证据池 → 六视角60只短名单 → 10—20只公告终审”逐层收敛，并记录每层数量、淘汰原因和真实耗时。六个研究视角为质量成长、合理估值、盈利变化、稳定相对强度、行业扩散和逆向修复；任何单一技术形态或综合分都不能直接生成买入结论。
+
 ---
 
 ## 1. 回测指标
@@ -356,6 +360,10 @@ flowchart LR
 | **Hono Middleware** | Cloudflare Worker API 的请求处理链。公共链负责请求 ID、安全响应头、CORS 和请求体限制，路由链再执行 JWT 鉴权、限流和业务校验。 |
 | **Redis 临时协调状态** | 使用 Upstash Redis REST 保存可过期的用户请求额度、每日沙箱 CPU 用量和短期 Agent Run 结果，使不同 Worker 实例看到一致状态；Redis 不保存持仓、订单、交易信号或长期审计真相。 |
 | **本地软限流** | 未配置 Redis 或 Redis 临时故障时，单个 Worker 实例内的保护计数。实例回收或扩容后不保证全局一致，响应头通过 `local` / `local-fallback` 明确标识。 |
+| **Workers Logs** | Cloudflare Worker 免费日志：未捕获异常和 `console.error` 进控制台，约保留 3 天。不写 Supabase。 |
+| **Web Analytics** | Cloudflare 免费网站统计：匿名 PV/UV 和页面访问。可在 Pages 项目里打开，或用公开构建变量 `VITE_CF_WEB_ANALYTICS_TOKEN` 注入 beacon。不做按钮点击率。 |
+| **Clarity（白名单）** | Microsoft Clarity 点击热力图/录屏。只对有效白名单用户加载，默认项目 `y6albpfin1`，可用 `VITE_CLARITY_PROJECT_ID` 覆盖。事件进 Clarity，不写业务库。 |
+| **新闻打点 / News chart overlay** | 单股分析页和 `analyze_stock` 诊断上的读盘叠加层：用规则过滤东方财富个股新闻，把业绩/监管/股东/交易事件对齐到交易日并标在 K 线上。不进漏斗、不改候选、不构成买卖依据。 |
 | **web_search（读盘室）** | DeepSeek Responses API 的服务端联网搜索工具；仅在读盘室、模型为 `deepseek-v4-flash`、且官方 `api.deepseek.com` origin 时注入。用于公开网页/舆情检索，不替代行情与持仓工具；搜索证据仅当轮有效。与 CLI 本机 CDP `browser_research` 不同路径。 |
 | **browser_research（CLI）** | TUI/CLI 专用公开网页检索：Playwright 附着本机 Chrome CDP。CDP 未就绪时弹窗授权，同意后自动拉起独立调试 Chrome（`~/.wyckoff/chrome-cdp`），授权本会话有效；可用 `/browser start|status`。 |
 | **观察篮临时行情** | 读盘室按当前问题选取观察篮标的后拉取的 TickFlow 快照；浏览器缓存有效期为 45 秒，只作本轮模型上下文，不写入 Redis、持仓或信号表。 |
