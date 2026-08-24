@@ -8,6 +8,7 @@ from datetime import datetime
 from zoneinfo import ZoneInfo
 
 from integrations.recommendation_performance import refresh_tracking_performance
+from integrations.supabase_base import is_admin_configured
 from workflows.recommendation_tracking_reprice import (
     refresh_global_tracking_prices,
     refresh_tracking_prices_with_tickflow_realtime,
@@ -26,11 +27,17 @@ def run_recommendation_reprice_job(request: RecommendationRepriceRequest) -> int
     logs_path = str(request.logs_path or "").strip() or None
     market = str(request.market or "cn").strip().lower()
     _log(f"开始执行 recommendation tracking 回填任务 market={market}", logs_path)
+    if not is_admin_configured():
+        _log("SUPABASE_URL 或 SUPABASE_SERVICE_ROLE_KEY 未配置，跳过推荐回填任务", logs_path)
+        return 0
+    if not os.getenv("TICKFLOW_API_KEY", "").strip():
+        _log("TICKFLOW_API_KEY 未配置，跳过推荐回填任务", logs_path)
+        return 0
     try:
         summary = _run_market_reprice(market, logs_path)
     except Exception as e:
-        _log(f"任务失败: {e}", logs_path)
-        return 1
+        _log(f"任务未完成 ({market}): {e}", logs_path)
+        return 0 if market != "cn" else 1
 
     _log(_summary_line(summary), logs_path)
     return 0

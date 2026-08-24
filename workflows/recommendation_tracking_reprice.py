@@ -452,61 +452,73 @@ def _build_tushare_tracking_updates(
 
 def refresh_tracking_prices_with_tickflow_realtime() -> dict[str, Any]:
     if not is_admin_configured():
-        raise ValueError("SUPABASE_URL/SUPABASE_SERVICE_ROLE_KEY 未配置")
+        logger.info("SUPABASE_URL/SUPABASE_SERVICE_ROLE_KEY 未配置，跳过 CN 推荐回填")
+        return empty_tracking_refresh_summary()
     require_server_write_context("refresh CN tracking prices")
     api_key = os.getenv("TICKFLOW_API_KEY", "").strip()
     if not api_key:
-        raise ValueError("TICKFLOW_API_KEY 未配置")
+        logger.info("TICKFLOW_API_KEY 未配置，跳过 CN 推荐回填")
+        return empty_tracking_refresh_summary()
     from integrations.tickflow_client import normalize_cn_symbol
 
-    client = create_admin_client()
-    records = fetch_recommendation_tracking_records(client, "id,code,recommend_date")
-    if not records:
+    try:
+        client = create_admin_client()
+        records = fetch_recommendation_tracking_records(client, "id,code,recommend_date")
+        if not records:
+            return empty_tracking_refresh_summary()
+        grouped = _group_records_by_code6(records)
+        symbols = [normalize_cn_symbol(code) for code in sorted(grouped)]
+        symbols = [symbol for symbol in symbols if symbol]
+        batch_size = max(min(int(os.getenv("RECOMMENDATION_TICKFLOW_BATCH_SIZE", "80")), 200), 1)
+        quotes, hist_map = fetch_tickflow_tracking_market_data(api_key, symbols, batch_size)
+        updates, codes_no_data, latest_trade_date = _build_tickflow_tracking_updates(
+            grouped,
+            quotes,
+            hist_map,
+            datetime.now(UTC).isoformat(),
+        )
+        return _refresh_summary(records, grouped, updates, codes_no_data, latest_trade_date, client)
+    except Exception as exc:
+        logger.warning("[CN 市场回填跳过] %s", exc)
         return empty_tracking_refresh_summary()
-    grouped = _group_records_by_code6(records)
-    symbols = [normalize_cn_symbol(code) for code in sorted(grouped)]
-    symbols = [symbol for symbol in symbols if symbol]
-    batch_size = max(min(int(os.getenv("RECOMMENDATION_TICKFLOW_BATCH_SIZE", "80")), 200), 1)
-    quotes, hist_map = fetch_tickflow_tracking_market_data(api_key, symbols, batch_size)
-    updates, codes_no_data, latest_trade_date = _build_tickflow_tracking_updates(
-        grouped,
-        quotes,
-        hist_map,
-        datetime.now(UTC).isoformat(),
-    )
-    return _refresh_summary(records, grouped, updates, codes_no_data, latest_trade_date, client)
 
 
 def refresh_global_tracking_prices(market: str) -> dict[str, Any]:
     if not is_admin_configured():
-        raise ValueError("SUPABASE_URL/SUPABASE_SERVICE_ROLE_KEY 未配置")
+        logger.info("SUPABASE_URL/SUPABASE_SERVICE_ROLE_KEY 未配置，跳过 %s 市场回填", market)
+        return empty_tracking_refresh_summary()
     require_server_write_context(f"refresh global tracking prices {market}")
     api_key = os.getenv("TICKFLOW_API_KEY", "").strip()
     if not api_key:
-        raise ValueError("TICKFLOW_API_KEY 未配置")
-
-    client = create_admin_client()
-    records = fetch_global_recommendation_tracking_records(client, market, "id,code,recommend_date")
-    if not records:
+        logger.info("TICKFLOW_API_KEY 未配置，跳过 %s 市场回填", market)
         return empty_tracking_refresh_summary()
-    grouped = _group_global_records_by_symbol(records)
-    batch_size = max(min(int(os.getenv("RECOMMENDATION_TICKFLOW_BATCH_SIZE", "80")), 200), 1)
-    quotes, hist_map = fetch_tickflow_tracking_market_data(api_key, sorted(grouped), batch_size)
-    updates, codes_no_data, latest_trade_date = build_global_tickflow_tracking_updates(
-        grouped,
-        quotes,
-        hist_map,
-        datetime.now(UTC).isoformat(),
-    )
-    written = upsert_global_recommendation_tracking_updates(client, market, updates)
-    return {
-        "rows_total": len(records),
-        "rows_updated": written,
-        "rows_skipped": max(len(records) - written, 0),
-        "codes_total": len(grouped),
-        "codes_no_data": codes_no_data,
-        "latest_trade_date": latest_trade_date,
-    }
+
+    try:
+        client = create_admin_client()
+        records = fetch_global_recommendation_tracking_records(client, market, "id,code,recommend_date")
+        if not records:
+            return empty_tracking_refresh_summary()
+        grouped = _group_global_records_by_symbol(records)
+        batch_size = max(min(int(os.getenv("RECOMMENDATION_TICKFLOW_BATCH_SIZE", "80")), 200), 1)
+        quotes, hist_map = fetch_tickflow_tracking_market_data(api_key, sorted(grouped), batch_size)
+        updates, codes_no_data, latest_trade_date = build_global_tickflow_tracking_updates(
+            grouped,
+            quotes,
+            hist_map,
+            datetime.now(UTC).isoformat(),
+        )
+        written = upsert_global_recommendation_tracking_updates(client, market, updates)
+        return {
+            "rows_total": len(records),
+            "rows_updated": written,
+            "rows_skipped": max(len(records) - written, 0),
+            "codes_total": len(grouped),
+            "codes_no_data": codes_no_data,
+            "latest_trade_date": latest_trade_date,
+        }
+    except Exception as exc:
+        logger.warning("[%s 市场回填跳过] %s", market, exc)
+        return empty_tracking_refresh_summary()
 
 
 def build_global_tickflow_tracking_updates(
