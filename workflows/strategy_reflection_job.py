@@ -40,17 +40,26 @@ def build_strategy_reflection_payloads(request: StrategyReflectionRequest) -> tu
 
 
 def run_strategy_reflection_job(request: StrategyReflectionRequest) -> int:
+    from integrations.supabase_base import is_admin_configured
+
     if not strategy_reflection_enabled():
         print("[strategy_reflection] disabled; set WYCKOFF_STRATEGY_REFLECTION=shadow to enable")
         return 0
-    reflection, candidate = build_strategy_reflection_payloads(request)
-    if request.dry_run:
-        print(json.dumps({"reflection": reflection, "candidate": candidate}, ensure_ascii=False, indent=2))
+    if not is_admin_configured():
+        print("[strategy_reflection] Supabase admin 未配置，跳过每周策略反思")
         return 0
-    reflection_written = upsert_strategy_reflection(reflection)
-    candidate_written = upsert_strategy_policy_candidate(candidate)
-    print(
-        "[strategy_reflection] written: "
-        f"reflection={reflection_written}, candidate={candidate_written}, status={reflection['status']}"
-    )
-    return 0
+    try:
+        reflection, candidate = build_strategy_reflection_payloads(request)
+        if request.dry_run:
+            print(json.dumps({"reflection": reflection, "candidate": candidate}, ensure_ascii=False, indent=2))
+            return 0
+        reflection_written = upsert_strategy_reflection(reflection)
+        candidate_written = upsert_strategy_policy_candidate(candidate)
+        status = reflection.get("status", "unknown") if isinstance(reflection, dict) else "unknown"
+        print(
+            f"[strategy_reflection] written: reflection={reflection_written}, candidate={candidate_written}, status={status}"
+        )
+        return 0
+    except Exception as exc:
+        print(f"[strategy_reflection] 执行跳过: {exc}")
+        return 0
