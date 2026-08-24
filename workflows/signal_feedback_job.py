@@ -13,6 +13,7 @@ import pandas as pd
 
 from core.signal_feedback import build_signal_registry_updates, summarize_signal_health
 from core.signal_lifecycle import evaluate_signal_lifecycle
+from integrations.supabase_base import is_admin_configured
 from integrations.supabase_signal_feedback import (
     load_pending_outcome_observation_ids,
     load_recent_signal_observations,
@@ -60,9 +61,16 @@ def default_registry_horizon() -> int:
 
 
 def run_signal_feedback(config: SignalFeedbackConfig, log_fn: LogFn = print) -> dict[str, int]:
-    outcome_written = 0 if config.health_only else refresh_outcomes(config, log_fn)
-    health_written = refresh_health(config, log_fn)
-    return {"outcomes": outcome_written, "health": health_written}
+    if not is_admin_configured():
+        log_fn("[signal_feedback] Supabase admin 未配置，跳过信号反馈刷新")
+        return {"outcomes": 0, "health": 0}
+    try:
+        outcome_written = 0 if config.health_only else refresh_outcomes(config, log_fn)
+        health_written = refresh_health(config, log_fn)
+        return {"outcomes": outcome_written, "health": health_written}
+    except Exception as exc:
+        log_fn(f"[signal_feedback] 信号反馈执行跳过: {exc}")
+        return {"outcomes": 0, "health": 0}
 
 
 def refresh_outcomes(config: SignalFeedbackConfig, log_fn: LogFn = print) -> int:

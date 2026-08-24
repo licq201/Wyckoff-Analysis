@@ -46,7 +46,16 @@ def parse_horizons(raw: str) -> tuple[int, ...]:
 
 
 def run_strategy_attribution_report(request: StrategyAttributionRequest) -> dict[str, Any]:
-    client = create_report_client(no_write=request.no_write)
+    from integrations.supabase_base import is_admin_configured
+
+    if not is_admin_configured() and not request.no_write:
+        print("[strategy_attribution] Supabase admin 未配置，跳过策略归因报告生成")
+        return {}
+    try:
+        client = create_report_client(no_write=request.no_write)
+    except Exception as exc:
+        print(f"[strategy_attribution] 连接 Supabase 失败，跳过归因报告: {exc}")
+        return {}
     try:
         report = build_report(
             client,
@@ -63,6 +72,9 @@ def run_strategy_attribution_report(request: StrategyAttributionRequest) -> dict
         if request.output_dir:
             write_artifacts(report, request.output_dir)
         return report
+    except Exception as exc:
+        print(f"[strategy_attribution] 生成策略归因报告跳过: {exc}")
+        return {}
     finally:
         close_client(client)
 
