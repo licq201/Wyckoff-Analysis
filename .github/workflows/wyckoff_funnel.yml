@@ -33,12 +33,11 @@ jobs:
       FUNNEL_MAX_WORKERS: "4"
       FUNNEL_BATCH_SIZE: "200"
       FUNNEL_BATCH_SLEEP: "0.55"
-      END_CALENDAR_DAY: ${{ github.event.inputs.end_calendar_day || '' }}
-      DEFAULT_LLM_PROVIDER: ${{ secrets.DEFAULT_LLM_PROVIDER }}
-      STEP3_LLM_PROVIDER: ${{ vars.STEP3_LLM_PROVIDER || secrets.STEP3_LLM_PROVIDER || 'gemini' }}
-      STEP3_LLM_FALLBACK_PROVIDERS: ${{ vars.STEP3_LLM_FALLBACK_PROVIDERS || secrets.STEP3_LLM_FALLBACK_PROVIDERS || 'efficiency' }}
+      DEFAULT_LLM_PROVIDER: ${{ vars.DEFAULT_LLM_PROVIDER || secrets.DEFAULT_LLM_PROVIDER || 'deepseek' }}
+      STEP3_LLM_PROVIDER: ${{ vars.STEP3_LLM_PROVIDER || secrets.STEP3_LLM_PROVIDER || vars.DEFAULT_LLM_PROVIDER || secrets.DEFAULT_LLM_PROVIDER || 'deepseek' }}
+      STEP3_LLM_FALLBACK_PROVIDERS: ${{ vars.STEP3_LLM_FALLBACK_PROVIDERS || secrets.STEP3_LLM_FALLBACK_PROVIDERS || '' }}
       STEP3_SEND_COMPLIANCE_BRIEF: "1"
-      STEP4_LLM_PROVIDER: ${{ vars.STEP4_LLM_PROVIDER || secrets.STEP4_LLM_PROVIDER || 'efficiency' }}
+      STEP4_LLM_PROVIDER: ${{ vars.STEP4_LLM_PROVIDER || secrets.STEP4_LLM_PROVIDER || vars.DEFAULT_LLM_PROVIDER || secrets.DEFAULT_LLM_PROVIDER || 'deepseek' }}
       GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
       GEMINI_MODEL: ${{ secrets.GEMINI_MODEL }}
       1ROUTE_API_KEY: ${{ secrets.ONEROUTE_API_KEY }}
@@ -74,7 +73,7 @@ jobs:
       SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
       SUPABASE_USER_ID: ${{ secrets.SUPABASE_USER_ID }}
       RAG_SEMANTIC_VETO_ENABLED: ${{ vars.RAG_SEMANTIC_VETO_ENABLED || '1' }}
-      RAG_SEMANTIC_PROVIDER: ${{ vars.RAG_SEMANTIC_PROVIDER || secrets.RAG_SEMANTIC_PROVIDER || 'efficiency' }}
+      RAG_SEMANTIC_PROVIDER: ${{ vars.RAG_SEMANTIC_PROVIDER || secrets.RAG_SEMANTIC_PROVIDER || vars.DEFAULT_LLM_PROVIDER || secrets.DEFAULT_LLM_PROVIDER || 'deepseek' }}
       # 实盘风控：ATR/结构止损优先，-12% 仅灾难地板；非主线 5 日时间管理见 holding_time_policy
       STEP4_BUY_HARD_STOP_ENABLED: "1"
       # 止损 12% -> 5%。生产回测（66 交易日/123 笔/含真实成本）四档单调：

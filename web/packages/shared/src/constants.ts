@@ -98,3 +98,4 @@ export const TABLE_NAMES = {
   TRADE_ORDERS: 'trade_orders',
   RECOMMENDATION_TRACKING: 'recommendation_tracking',
 } as const
+
