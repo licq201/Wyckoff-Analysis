@@ -49,9 +49,10 @@ def default_daily_job_logs_path() -> str:
 
 
 def resolve_daily_job_config(args: argparse.Namespace) -> DailyJobConfig:
-    provider = resolve_provider_name("STEP3_LLM_PROVIDER", "gemini")
+    default_llm = os.getenv("DEFAULT_LLM_PROVIDER", "").strip() or "deepseek"
+    provider = resolve_provider_name("STEP3_LLM_PROVIDER", default_llm)
     api_key, model, llm_base_url = get_provider_credentials(provider)
-    step4_provider = resolve_provider_name("STEP4_LLM_PROVIDER", "efficiency")
+    step4_provider = resolve_provider_name("STEP4_LLM_PROVIDER", default_llm)
     step4_api_key, step4_model, step4_base_url = get_provider_credentials(step4_provider)
     preview_only = env_flag("DAILY_JOB_PREVIEW_ONLY")
     historical_replay = bool(os.getenv("END_CALENDAR_DAY", "").strip())

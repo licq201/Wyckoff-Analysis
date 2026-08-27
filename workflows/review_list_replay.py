@@ -449,7 +449,8 @@ def _run_review_for_codes(
     log(f"[review] 今日发现满足强势复盘池股票 {len(review_codes)} 只: {', '.join(review_codes)}")
     ctx = load_previous_context(dates.previous_trade_date, log=log)
     if ctx is None:
-        return 3
+        log("[review] 未找到前一交易日漏斗快照，跳过复盘报告生成（等待上游主漏斗正常产出快照后自动恢复）")
+        return 0
     rows, stage_counter, stats = build_replay_rows(
         review_codes,
         ctx,

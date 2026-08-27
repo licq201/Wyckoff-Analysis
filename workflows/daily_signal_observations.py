@@ -260,10 +260,15 @@ def persist_signal_observations(
     dry_run: bool = False,
     log_fn: LogFn | None = None,
 ) -> bool:
+    from integrations.supabase_base import is_admin_configured
+
     if not step2_details:
         return True
     if dry_run:
         _log(log_fn, "预演模式: 跳过信号观察样本入库", logs_path)
+        return True
+    if not is_admin_configured():
+        _log(log_fn, "Supabase service_role 未配置，跳过信号观察样本入库", logs_path)
         return True
     try:
         from integrations.supabase_signal_feedback import upsert_signal_observations
@@ -285,8 +290,8 @@ def persist_signal_observations(
         _log(log_fn, f"信号观察样本入库: rows={len(rows)}, written={written}", logs_path)
         return True
     except Exception as exc:
-        _log(log_fn, f"信号观察样本入库失败: {exc}", logs_path)
-        return False
+        _log(log_fn, f"信号观察样本入库跳过（非阻塞）: {exc}", logs_path)
+        return True
 
 
 def empty_springboard_fields() -> dict:
