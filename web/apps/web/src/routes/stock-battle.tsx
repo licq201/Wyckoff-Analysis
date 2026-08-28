@@ -551,7 +551,7 @@ function periodReturn(data: KlineRow[], days: number): number {
 }
 
 async function callBattleLLM(configs: Parameters<typeof streamLLMResponseWithFallback>[0], stocks: BattleStock[], signal?: AbortSignal, onDelta?: (chunk: string) => void, onModel?: (model: string) => void): Promise<string> {
-  const result = await streamLLMResponseWithFallback(configs, buildBattleMessages(stocks), { temperature: 0.45, maxTokens: 3500, signal, onDelta, onStatus: (status) => onModel?.(status.nextModel || status.model) })
+  const result = await streamLLMResponseWithFallback(configs, buildBattleMessages(stocks), { temperature: 0.45, maxTokens: 16384, signal, onDelta, onStatus: (status) => onModel?.(status.nextModel || status.model) })
   if (!result) throw new Error('模型未返回结果，请重试')
   return result
 }

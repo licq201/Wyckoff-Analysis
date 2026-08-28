@@ -684,7 +684,7 @@ async function callFullPortfolioLLM(configs: Parameters<typeof streamLLMResponse
   const result = await streamLLMResponseWithFallback(configs, [
     { role: 'system', content: PORTFOLIO_SYSTEM_PROMPT },
     { role: 'user', content: `请对我的完整持仓做整体诊断和资产配置建议。\n\n${prompt}` },
-  ], { temperature: 0.5, maxTokens: 4000, signal, onDelta, onStatus: (status) => onModel?.(status.nextModel || status.model) })
+  ], { temperature: 0.5, maxTokens: 16384, signal, onDelta, onStatus: (status) => onModel?.(status.nextModel || status.model) })
   if (!result) throw new Error('模型未返回结果，请重试')
   return result
 }

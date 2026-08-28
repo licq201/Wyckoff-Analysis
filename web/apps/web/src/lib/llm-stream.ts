@@ -44,7 +44,18 @@ export async function streamLLMResponse(
 
   const decoder = new TextDecoder()
   let result = ''
+  let reasoning = ''
   let buffer = ''
+
+  const processLine = (line: string) => {
+    const delta = extractDataLineDelta(line, protocol)
+    if (delta?.content) {
+      opts.onDelta?.(delta.content)
+      result += delta.content
+    } else if (delta?.reasoning) {
+      reasoning += delta.reasoning
+    }
+  }
 
   for (;;) {
     const { done, value } = await reader.read()
@@ -53,28 +64,36 @@ export async function streamLLMResponse(
     const lines = buffer.split('\n')
     buffer = lines.pop()!
     for (const line of lines) {
-      const delta = extractDataLineDelta(line, protocol)
-      if (delta) { opts.onDelta?.(delta); result += delta }
+      processLine(line)
     }
   }
   buffer += decoder.decode()
   for (const line of buffer.split('\n')) {
-    const delta = extractDataLineDelta(line, protocol)
-    if (delta) { opts.onDelta?.(delta); result += delta }
+    processLine(line)
   }
 
   if (!result && buffer.trim().startsWith('{')) {
     try {
       const parsed = JSON.parse(buffer.trim())
       const nonStreamContent = parsed.choices?.[0]?.message?.content || parsed.content?.[0]?.text
+      const nonStreamReasoning = parsed.choices?.[0]?.message?.reasoning_content
       if (typeof nonStreamContent === 'string' && nonStreamContent) {
         opts.onDelta?.(nonStreamContent)
         result = nonStreamContent
+      } else if (typeof nonStreamReasoning === 'string' && nonStreamReasoning) {
+        opts.onDelta?.(nonStreamReasoning)
+        result = nonStreamReasoning
       }
     } catch {
       // ignore
     }
   }
+
+  if (!result && reasoning) {
+    opts.onDelta?.(reasoning)
+    result = reasoning
+  }
+
   return result
 }
 
@@ -129,12 +148,22 @@ async function waitForRetry(attempt: number, signal?: AbortSignal): Promise<void
   })
 }
 
+function defaultMaxTokensForModel(model: string, requested?: number): number {
+  if (requested && requested > 0) return requested
+  const id = (model || '').toLowerCase()
+  if (id.includes('flash') || id.includes('reasoner') || id.includes('r1') || id.includes('o1') || id.includes('o3') || id.includes('thinking')) {
+    return 16384
+  }
+  return 8192
+}
+
 function buildStreamRequest(
   config: LLMConfig,
   messages: ChatMessage[],
   opts: { temperature?: number; maxTokens?: number },
   protocol: StreamProtocol,
 ): StreamRequest {
+  const resolvedMaxTokens = defaultMaxTokensForModel(config.model, opts.maxTokens)
   if (protocol === 'anthropic') {
     const system = messages.filter(item => item.role === 'system').map(item => item.content).join('\n\n')
     const chatMessages = messages.filter(item => item.role !== 'system')
@@ -151,7 +180,7 @@ function buildStreamRequest(
         messages: chatMessages,
         ...(system ? { system } : {}),
         temperature: opts.temperature ?? 0.5,
-        max_tokens: opts.maxTokens ?? 4096,
+        max_tokens: resolvedMaxTokens,
         stream: true,
       }),
     }
@@ -168,13 +197,13 @@ function buildStreamRequest(
       model: config.model,
       messages,
       temperature: opts.temperature ?? 0.5,
-      max_tokens: opts.maxTokens ?? 4096,
+      max_tokens: resolvedMaxTokens,
       stream: true,
     }),
   }
 }
 
-function extractDataLineDelta(line: string, protocol: StreamProtocol): string | undefined {
+function extractDataLineDelta(line: string, protocol: StreamProtocol): { content?: string; reasoning?: string } | undefined {
   const trimmed = line.trim()
   if (!trimmed.startsWith('data: ')) return undefined
   const payload = trimmed.slice(6)
@@ -186,9 +215,12 @@ function extractDataLineDelta(line: string, protocol: StreamProtocol): string | 
   }
 }
 
-function extractStreamDelta(json: unknown, protocol: StreamProtocol): string | undefined {
+function extractStreamDelta(json: unknown, protocol: StreamProtocol): { content?: string; reasoning?: string } | undefined {
   if (!json || typeof json !== 'object') return undefined
-  if (protocol === 'anthropic') return extractAnthropicDelta(json as Record<string, unknown>)
+  if (protocol === 'anthropic') {
+    const text = extractAnthropicDelta(json as Record<string, unknown>)
+    return text ? { content: text } : undefined
+  }
   const choices = (json as Record<string, unknown>).choices
   if (!Array.isArray(choices)) return undefined
   const first = choices[0]
@@ -196,7 +228,11 @@ function extractStreamDelta(json: unknown, protocol: StreamProtocol): string | u
   const delta = (first as Record<string, unknown>).delta
   if (!delta || typeof delta !== 'object') return undefined
   const content = (delta as Record<string, unknown>).content
-  return typeof content === 'string' ? content : undefined
+  const reasoning = (delta as Record<string, unknown>).reasoning_content || (delta as Record<string, unknown>).thought
+  const out: { content?: string; reasoning?: string } = {}
+  if (typeof content === 'string' && content) out.content = content
+  if (typeof reasoning === 'string' && reasoning) out.reasoning = reasoning
+  return (out.content || out.reasoning) ? out : undefined
 }
 
 function extractAnthropicDelta(json: Record<string, unknown>): string | undefined {

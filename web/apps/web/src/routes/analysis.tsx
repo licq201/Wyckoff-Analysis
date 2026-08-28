@@ -587,7 +587,7 @@ async function callLLM(configs: Parameters<typeof streamLLMResponseWithFallback>
   const result = await streamLLMResponseWithFallback(configs, [
     { role: 'system', content: ANALYSIS_SYSTEM_PROMPT },
     { role: 'user', content: `请分析股票 ${code} ${name}。\n\n${buildValuePrompt(valueSnapshot)}\n\n${klinePayload}` },
-  ], { temperature: 0.7, signal, onDelta, onStatus })
+  ], { temperature: 0.7, maxTokens: 16384, signal, onDelta, onStatus })
   if (!result) throw new Error('模型未返回结果，请重试')
   return result
 }
