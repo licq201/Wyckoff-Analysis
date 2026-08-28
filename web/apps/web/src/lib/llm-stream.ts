@@ -62,6 +62,19 @@ export async function streamLLMResponse(
     const delta = extractDataLineDelta(line, protocol)
     if (delta) { opts.onDelta?.(delta); result += delta }
   }
+
+  if (!result && buffer.trim().startsWith('{')) {
+    try {
+      const parsed = JSON.parse(buffer.trim())
+      const nonStreamContent = parsed.choices?.[0]?.message?.content || parsed.content?.[0]?.text
+      if (typeof nonStreamContent === 'string' && nonStreamContent) {
+        opts.onDelta?.(nonStreamContent)
+        result = nonStreamContent
+      }
+    } catch {
+      // ignore
+    }
+  }
   return result
 }
 

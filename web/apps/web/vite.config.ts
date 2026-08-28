@@ -82,6 +82,10 @@ function llmProxyPlugin(): Plugin {
             Readable.fromWeb(normalizeGeminiStream(response.body)).pipe(res)
             return
           }
+          if (SSE_CONTENT_RE.test(contentType) && response.body) {
+            Readable.fromWeb(response.body as Parameters<typeof Readable.fromWeb>[0]).pipe(res)
+            return
+          }
 
           const responseBody = await response.arrayBuffer()
           res.end(Buffer.from(responseBody))
