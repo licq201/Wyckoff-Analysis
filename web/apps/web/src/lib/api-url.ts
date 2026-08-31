@@ -3,6 +3,14 @@ const PRODUCTION_API_URL = 'https://wyckoff-api.yongkai-wang.workers.dev'
 
 export function apiUrl(path: `/api/${string}`): string {
   const configured = import.meta.env.VITE_API_URL?.trim()
-  const base = configured || (import.meta.env.DEV ? LOCAL_API_URL : PRODUCTION_API_URL)
-  return `${base.replace(/\/$/, '')}${path}`
+  if (configured) {
+    return `${configured.replace(/\/$/, '')}${path}`
+  }
+  if (!import.meta.env.DEV) {
+    return `${PRODUCTION_API_URL}${path}`
+  }
+  if (typeof window !== 'undefined' && window.location?.hostname && window.location.hostname !== 'localhost' && window.location.hostname !== '127.0.0.1') {
+    return path
+  }
+  return `${LOCAL_API_URL}${path}`
 }

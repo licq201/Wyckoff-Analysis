@@ -10,9 +10,14 @@ describe('apiUrl', () => {
     expect(apiUrl('/api/chat')).toBe('https://api.example.com/api/chat')
   })
 
-  it('uses the local Worker during development', () => {
+  it('uses relative path when accessed via LAN IP host in development', () => {
     vi.stubEnv('VITE_API_URL', '')
-
-    expect(apiUrl('/api/portfolio')).toBe('http://127.0.0.1:8787/api/portfolio')
+    const originalWindow = globalThis.window
+    try {
+      globalThis.window = { location: { hostname: '192.168.3.99' } } as unknown as Window & typeof globalThis
+      expect(apiUrl('/api/chat/config')).toBe('/api/chat/config')
+    } finally {
+      globalThis.window = originalWindow
+    }
   })
 })

@@ -180,5 +180,29 @@ export default defineConfig({
   server: {
     host: '0.0.0.0',
     port: 5173,
+    proxy: {
+      '/api/chat': {
+        target: 'http://127.0.0.1:8787',
+        changeOrigin: true,
+        ws: true,
+      },
+      '/api/agent-runs': {
+        target: 'http://127.0.0.1:8787',
+        changeOrigin: true,
+        ws: true,
+      },
+      '/api/portfolio': {
+        target: 'http://127.0.0.1:8787',
+        changeOrigin: true,
+      },
+      '/api/settings': {
+        target: 'http://127.0.0.1:8787',
+        changeOrigin: true,
+      },
+      '/api/health': {
+        target: 'http://127.0.0.1:8787',
+        changeOrigin: true,
+      },
+    },
   },
 })

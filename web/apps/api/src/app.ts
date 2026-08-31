@@ -32,22 +32,27 @@ export type Env = {
   SANDBOX_BRIDGE_SECRET?: string
 }
 
+const ALLOWED_CORS_ORIGIN_PATTERNS = [
+  /^http:\/\/localhost(:\d+)?$/,
+  /^http:\/\/127\.0\.0\.1(:\d+)?$/,
+  /^http:\/\/192\.168\.\d+\.\d+(:\d+)?$/,
+  /^http:\/\/10\.\d+\.\d+\.\d+(:\d+)?$/,
+  /^http:\/\/172\.(1[6-9]|2\d|3[0-1])\.\d+\.\d+(:\d+)?$/,
+  /^https:\/\/[a-z0-9-]+\.pages\.dev$/,
+]
+
+export function isAllowedCorsOrigin(origin: string): boolean {
+  if (!origin) return false
+  return ALLOWED_CORS_ORIGIN_PATTERNS.some((pattern) => pattern.test(origin))
+}
+
 export function createApiApp() {
   const app = new Hono<{ Bindings: Env }>()
 
   app.use('*', requestId({ limitLength: 128 }))
   app.use('*', secureHeaders())
   app.use('*', cors({
-    origin: [
-      'http://localhost:5173',
-      'http://localhost:5174',
-      'http://localhost:5175',
-      'http://127.0.0.1:5173',
-      'http://127.0.0.1:5174',
-      'http://127.0.0.1:5175',
-      'https://wyckoff-analysis.pages.dev',
-      'https://wyckoff.pages.dev',
-    ],
+    origin: (origin) => (isAllowedCorsOrigin(origin) ? origin : null),
     credentials: true,
   }))
   app.use('/api/*', bodyLimit({
