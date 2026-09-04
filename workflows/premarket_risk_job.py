@@ -6,7 +6,7 @@ import json
 import os
 from collections.abc import Callable
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, time
 from zoneinfo import ZoneInfo
 
 from core.premarket_public_brief import generate_public_premarket_brief
@@ -56,6 +56,15 @@ def default_logs_path() -> str:
     )
 
 
+def is_past_premarket_window(dt: datetime | None = None) -> bool:
+    current = dt or datetime.now(TZ)
+    if current.tzinfo is None:
+        current = current.replace(tzinfo=TZ)
+    else:
+        current = current.astimezone(TZ)
+    return current.time() >= time(9, 30)
+
+
 def run_premarket_risk_job(config: PremarketRiskJobConfig) -> int:
     log_line("盘前风控任务开始", config.logs_path)
     if config.backstop and backstop_should_skip(config.logs_path):
@@ -66,6 +75,12 @@ def run_premarket_risk_job(config: PremarketRiskJobConfig) -> int:
         log_line("--dry-run: 不发送飞书", config.logs_path)
         return 0
     persist_premarket_signal(snapshot, config.logs_path)
+    if config.backstop:
+        log_line("兜底模式: 跳过飞书发送（数据已落库供Step4消费）", config.logs_path)
+        return 0
+    if is_past_premarket_window():
+        log_line("已过盘前窗口(>=09:30): 跳过飞书发送", config.logs_path)
+        return 0
     return send_premarket_notification(config.webhook, content, config.logs_path)
 
 

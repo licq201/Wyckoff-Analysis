@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from datetime import datetime
+
 from workflows import premarket_risk_job as job
 
 
@@ -137,3 +139,68 @@ def test_send_premarket_notification_treats_missing_webhook_as_skip(tmp_path) ->
 
     assert code == 0
     assert "FEISHU_WEBHOOK_URL 未配置" in (tmp_path / "premarket.log").read_text(encoding="utf-8")
+
+
+def test_is_past_premarket_window_helper() -> None:
+    assert job.is_past_premarket_window(datetime(2026, 9, 4, 8, 20, tzinfo=job.TZ)) is False
+    assert job.is_past_premarket_window(datetime(2026, 9, 4, 9, 29, 59, tzinfo=job.TZ)) is False
+    assert job.is_past_premarket_window(datetime(2026, 9, 4, 9, 30, 0, tzinfo=job.TZ)) is True
+    assert job.is_past_premarket_window(datetime(2026, 9, 4, 15, 17, tzinfo=job.TZ)) is True
+
+
+def test_backstop_execution_persists_signal_but_skips_feishu_push(monkeypatch, tmp_path) -> None:
+    persisted = []
+    monkeypatch.setattr(job, "backstop_should_skip", lambda *_args: False)
+    monkeypatch.setattr(job, "collect_premarket_snapshot", lambda _logs_path: _snapshot())
+    monkeypatch.setattr(job, "persist_premarket_signal", lambda _s, _l: persisted.append(True))
+    monkeypatch.setattr(
+        job,
+        "send_premarket_notification",
+        lambda *_args: (_ for _ in ()).throw(AssertionError("兜底模式不应推送飞书")),
+    )
+    logs = tmp_path / "premarket.log"
+
+    code = job.run_premarket_risk_job(
+        job.PremarketRiskJobConfig(logs_path=str(logs), webhook="https://feishu", backstop=True)
+    )
+
+    assert code == 0
+    assert len(persisted) == 1
+    assert "兜底模式: 跳过飞书发送" in logs.read_text(encoding="utf-8")
+
+
+def test_past_premarket_window_skips_feishu_push(monkeypatch, tmp_path) -> None:
+    persisted = []
+    monkeypatch.setattr(job, "collect_premarket_snapshot", lambda _logs_path: _snapshot())
+    monkeypatch.setattr(job, "persist_premarket_signal", lambda _s, _l: persisted.append(True))
+    monkeypatch.setattr(job, "is_past_premarket_window", lambda: True)
+    monkeypatch.setattr(
+        job,
+        "send_premarket_notification",
+        lambda *_args: (_ for _ in ()).throw(AssertionError("超过盘前窗口不应推送飞书")),
+    )
+    logs = tmp_path / "premarket.log"
+
+    code = job.run_premarket_risk_job(
+        job.PremarketRiskJobConfig(logs_path=str(logs), webhook="https://feishu", backstop=False)
+    )
+
+    assert code == 0
+    assert len(persisted) == 1
+    assert "已过盘前窗口(>=09:30): 跳过飞书发送" in logs.read_text(encoding="utf-8")
+
+
+def test_normal_mode_before_market_sends_feishu_push(monkeypatch, tmp_path) -> None:
+    notified = []
+    monkeypatch.setattr(job, "collect_premarket_snapshot", lambda _logs_path: _snapshot())
+    monkeypatch.setattr(job, "persist_premarket_signal", lambda _s, _l: None)
+    monkeypatch.setattr(job, "is_past_premarket_window", lambda: False)
+    monkeypatch.setattr(job, "send_premarket_notification", lambda _w, _c, _l: notified.append(True) or 0)
+    logs = tmp_path / "premarket.log"
+
+    code = job.run_premarket_risk_job(
+        job.PremarketRiskJobConfig(logs_path=str(logs), webhook="https://feishu", backstop=False)
+    )
+
+    assert code == 0
+    assert len(notified) == 1

@@ -4,13 +4,10 @@ on:
   # 主路径：Codex Automation 在工作日北京时间 08:20 调用 workflow_dispatch，此时 VIX 已随美股
   # 收盘稳定超过 1 小时，且给 09:30 开盘留出缓冲。Actions 页面仍可手动补跑。
   #
-  # 兜底：schedule 只补 workflow_dispatch 漏掉的日子，带 --backstop 幂等短路。
-  # schedule 曾被完全停用，因为免费额度下实测延迟 3~5 小时（配 UTC 00:20 实际北京 11:36~13:35
-  # 才起跑），错过开盘前窗口。但盘前态的另一个消费方是 Step4（北京 20:15），迟到几小时对它毫无
-  # 影响——缺失才会让它降级成 UNKNOWN 禁买一整天。外部触发器实测连续 4 个周一周二未触发，
-  # 期间 Step4 因此禁买，故补上这条纯服务于 Step4 的兜底。
+  # 兜底：schedule 在工作日北京时间 08:15（UTC 00:15）触发，带 --backstop 幂等短路。
+  # 兜底模式或开盘后（>=09:30）运行仅落库供 Step4 消费，自动静默跳过飞书推送，避免收盘或盘中误发卡片。
   schedule:
-    - cron: "20 2 * * 1-5"
+    - cron: "15 0 * * 1-5"
   workflow_dispatch:
 
 concurrency:
