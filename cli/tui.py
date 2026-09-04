@@ -25,7 +25,7 @@ from rich.text import Text
 from textual import events, work
 from textual.app import App, ComposeResult
 from textual.binding import Binding
-from textual.containers import Vertical
+from textual.containers import Vertical, VerticalScroll
 from textual.screen import ModalScreen
 from textual.widgets import Input, OptionList, RichLog, Static
 from textual.widgets.option_list import Option
@@ -1786,13 +1786,16 @@ _SPINNER = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
 _DEFAULT_MODEL_BY_PROVIDER = {
     "gemini": "gemini-2.0-flash",
     "openai": "gpt-4o",
+    "deepseek": "deepseek-v4-flash",
     "claude": "claude-sonnet-4-20250514",
 }
 _MODEL_PROVIDER_OPTIONS = [
     ("gemini", "Gemini (Google)"),
-    ("openai", "OpenAI / 兼容接口 (LongCat, DeepSeek, Qwen...)"),
+    ("openai", "OpenAI / 兼容接口 (LongCat, Qwen...)"),
+    ("deepseek", "DeepSeek V4 官方 API"),
     ("claude", "Claude (Anthropic)"),
 ]
+_DEEPSEEK_REASONING_OPTIONS = [(level, level) for level in ("off", "low", "high", "max")]
 
 
 # ---------------------------------------------------------------------------
@@ -1831,8 +1834,11 @@ class ToolConfirmScreen(ModalScreen[dict]):
         align: center middle;
     }
     #confirm-box {
-        width: 64;
-        max-height: 20;
+        width: 80%;
+        min-width: 64;
+        max-width: 100;
+        height: auto;
+        max-height: 90%;
         background: $surface;
         border: thick $accent;
         padding: 1 2;
@@ -1841,13 +1847,19 @@ class ToolConfirmScreen(ModalScreen[dict]):
         text-style: bold;
         margin-bottom: 1;
     }
-    #confirm-summary {
-        color: $text-muted;
+    #confirm-summary-scroll {
+        height: auto;
+        max-height: 8;
+        overflow-y: auto;
         margin-bottom: 1;
     }
+    #confirm-summary {
+        width: 100%;
+        color: $text-muted;
+    }
     #confirm-options {
-        height: auto;
-        max-height: 6;
+        height: 6;
+        min-height: 6;
     }
     #confirm-edit {
         display: none;
@@ -1869,7 +1881,8 @@ class ToolConfirmScreen(ModalScreen[dict]):
                 f"⚠ [bold]{self.display_name}[/bold] 需要确认",
                 id="confirm-title",
             )
-            yield Static(self._format_summary(), id="confirm-summary")
+            with VerticalScroll(id="confirm-summary-scroll"):
+                yield Static(self._format_summary(), id="confirm-summary")
             yield OptionList(
                 Option("允许一次", id="once"),
                 Option("本次会话总是允许", id="always"),
@@ -2443,8 +2456,8 @@ class WyckoffTUI(App):
 
     def _build_status_right(self) -> str:
         parts = []
-        prov = self._state.get("provider_name", "")
-        model = self._state.get("model", "")
+        prov = getattr(self._provider, "active_provider_name", "") or self._state.get("provider_name", "")
+        model = getattr(self._provider, "active_model", "") or self._state.get("model", "")
         if prov and model:
             parts.append(f"{prov}:{model}")
         email = self._tools.state.get("email", "") if self._tools else ""
@@ -4046,6 +4059,11 @@ class WyckoffTUI(App):
             inp.password = True
             self._input_mode = _InputState.MODEL_KEY
 
+        elif callback_id == "model_thinking":
+            self._input_buf["thinking_level"] = value
+            log.write(Text.from_markup(f"  思考强度: {value}"))
+            self._apply_model_config()
+
     def _switch_model_selector(self) -> None:
         """弹出浮层选择器切换当前模型。"""
         from cli.auth import load_default_model_id, load_model_configs
@@ -4212,6 +4230,11 @@ class WyckoffTUI(App):
     def _handle_model_url_input(self, text: str, inp: Input) -> None:
         self._input_buf["base_url"] = text
         self._reset_input_prompt(inp)
+        if self._input_buf.get("provider") == "deepseek":
+            log = self.query_one("#chat-log", ChatLog)
+            log.write(Text.from_markup("  选择思考强度（推荐 high）："))
+            self._show_selector(_DEEPSEEK_REASONING_OPTIONS, "model_thinking")
+            return
         self._apply_model_config()
 
     def _apply_model_config(self) -> None:
@@ -4224,6 +4247,7 @@ class WyckoffTUI(App):
                 "api_key": buf["api_key"],
                 "model": buf.get("model", ""),
                 "base_url": buf.get("base_url", ""),
+                "thinking_level": buf.get("thinking_level", ""),
             }
             from cli.auth import load_model_configs, save_model_entry, set_default_model
 

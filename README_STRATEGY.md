@@ -254,7 +254,7 @@ L4 命中不等于可交易。`core/candidate_policy.py` 在送入 Step3 前统�
 
 报告严格区分四层状态：`DETECTED` 是当日 L4/起跳板结构命中；`SURVIVED` 表示跨日未失效但需求证据不足；`VALIDATED` 表示守住信号位且出现高收、缩量或转强需求，库内暂以 `confirmed` 兼容存储；`OMS_APPROVED` 才是最终可执行核准。单纯站在 MA20 上、缩量但弱收，不能从 `SURVIVED` 升级为 `VALIDATED`。
 
-Step3 默认最多复核 5 只，跨日 `VALIDATED` 候选优先占用最多 3 席，剩余席位才按漏斗顺序从当日 `selected_for_ai` 填充；这既保留当日唯一预选血缘，也不会让已验证信号被上下文 cap 裁掉。报告正文展示执行摘要、实际送审清单，以及 A/B/C≥2 且当日写入 `recommendation_tracking` 的精简形态观察（默认最多 20 只）；同一股票的多个达标信号合并显示为“双/多 Wyckoff 形态共振”，并完整写入 `signal_types`。完整 L4、主线池和证据仍保留在结构化运行数据中。合规版市场观察简报默认发送，可用 `STEP3_SEND_COMPLIANCE_BRIEF=0` 显式关闭。
+Step3 默认最多复核 5 只，跨日 `VALIDATED` 候选优先占用最多 3 席，剩余席位才按漏斗顺序从当日 `selected_for_ai` 填充；这既保留当日唯一预选血缘，也不会让已验证信号被上下文 cap 裁掉。报告正文展示执行摘要、实际送审清单，以及 A/B/C≥2 且当日写入 `recommendation_tracking` 的全部形态观察（飞书卡不再省略）；同一股票的多个达标信号合并显示为“双/多 Wyckoff 形态共振”，并完整写入 `signal_types`。完整 L4、主线池和证据仍保留在结构化运行数据中。用户面向漏斗/简报不再列出 ETF。合规版市场观察简报默认发送，可用 `STEP3_SEND_COMPLIANCE_BRIEF=0` 显式关闭。
 
 ### 特征切片（不喂原始 K 线）
 
@@ -332,7 +332,7 @@ Step4 的候选入口先执行确定性准入：必须跨日 `confirmed`，且�
 
 对 `PROBE / ATTACK`，AI 必须提供结构入场区间。OMS 将该区间上界与涨幅防追高、ATR 防追高上限取最严值，生成报告中唯一的“明日允许买入区间”；区间缺失、上下界非法或收窄后无交集一律拒单。次日开盘价高于上界不追、低于下界不抄底，报告不再重复展示参考价和另一套防追高价格。
 
-历史回放与实盘 OMS 严格隔离：只要显式设置 `END_CALENDAR_DAY`，日漏斗仍可重放 Step2/Step3，但会在读取实盘持仓、订单或 Step4 Supabase 状态前强制跳过 Step4。
+历史回放与实盘 OMS 严格隔离：只要显式设置 `END_CALENDAR_DAY`，日漏斗仍可重放 Step2/Step3，K 线/财务按截止日做时点裁切，但会在读取实盘持仓、订单或 Step4 Supabase 状态前强制跳过 Step4。周日定时不算回放，不裁 K 线/财务。
 
 ### 优先级
 

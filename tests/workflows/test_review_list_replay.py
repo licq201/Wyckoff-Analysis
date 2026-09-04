@@ -395,6 +395,69 @@ def test_build_report_lines_separates_raw_and_executable_capture_rates() -> None
     assert "可交易样本前日候选 1/1" in text
 
 
+def test_report_head_carries_the_only_same_pool_ratio() -> None:
+    """「可买到且被捕获」必须在报告头,不能只埋在可交易口径的第三段。
+
+    实测 2026-09-01 这个比率是 1/54,而同一份报告头上写的是影子召回 35/98 ——
+    后者的分母是涨幅筛出来的,读着像召回率其实是事后命中计数。分子分母同池的
+    只有这一个,它得排在前面。
+    """
+    lines = build_report_lines(
+        [_row("000001", "平安银行", REVIEW_STAGE_CANDIDATE_HIT)],
+        Counter({REVIEW_STAGE_CANDIDATE_HIT: 1}),
+        today=date(2026, 9, 1),
+        previous_trade_date=date(2026, 8, 31),
+        end_trade_date="2026-08-31",
+        stats={
+            "candidate": 2,
+            "recommended": 1,
+            "total": 98,
+            "l1_eligible": 58,
+            "open_executable": 54,
+            "candidate_open_executable": 1,
+            "execution_available": 98,
+            "shadow": 35,
+            "shadow_open_executable": 32,
+        },
+    )
+
+    text = "\n".join(lines)
+    assert "**可买到且被捕获**: 1/54（1.9%）" in text
+    # 必须排在影子召回之前:影子那行的分母是结果筛出来的。
+    assert text.index("可买到且被捕获") < text.index("影子召回")
+
+
+def test_trigger_miss_focus_stops_proposing_lane_changes() -> None:
+    """买点未确认这档不能提「补强爆发前夜车道」。
+
+    同一份报告的基础准入档已经写了「不建议为涨停复盘反向放宽」,证据强度一样,
+    两档结论必须一致。原措辞是在结果选样上直接提改动方案。
+    """
+    lines = build_focus_lines(
+        [_row("000004", "长江证券", REVIEW_STAGE_TRIGGER_MISS)],
+        today=date(2026, 9, 1),
+        previous_trade_date=date(2026, 8, 31),
+    )
+    text = "\n".join(lines)
+
+    assert "买点未确认" in text
+    assert "需要补强" not in text
+    assert "影子回放" in text
+
+
+def test_focus_lines_open_with_the_result_selected_caveat() -> None:
+    """报告一进「重点归因」就要说样本是按结果选的,否则每档只数会被当淘汰率读。"""
+    lines = build_focus_lines(
+        [_row("000006", "深振业A", REVIEW_STAGE_BASE_REJECT)],
+        today=date(2026, 9, 1),
+        previous_trade_date=date(2026, 8, 31),
+    )
+
+    assert lines[0] == "**重点归因**"
+    assert "没有分母" in lines[1]
+    assert "不能作为放宽" in lines[1]
+
+
 def test_tushare_cross_sections_avoid_full_market_history_fetch(monkeypatch):
     from integrations import tushare_client
 
@@ -499,7 +562,10 @@ def test_review_trace_records_as_run_stages_without_ohlcv(tmp_path):
     assert payload["symbols"]["000002"]["stage"] == REVIEW_STAGE_STRENGTH_MISS
     assert payload["symbols"]["000003"]["stage"] == REVIEW_STAGE_BASE_REJECT
     assert "all_df_map" not in payload
-    assert "close" not in payload["symbols"]["000001"]
+    # close 只留信号日一个标量,不能把日线序列整段搬进 trace(那会让单日产物涨几十倍)。
+    assert payload["symbols"]["000001"]["close"] == 10.0
+    # 这个 layers 是 SimpleNamespace,没有 rps_*_map:缺字段要退成 None,不能抛。
+    assert payload["symbols"]["000001"]["rps_fast"] is None
     assert payload["symbols"]["000002"]["shadow_lane"] == "near_l2"
 
     path = write_review_trace_artifact(inputs, {"sos": [("000001", 5.0)]}, {}, str(tmp_path))
@@ -507,6 +573,51 @@ def test_review_trace_records_as_run_stages_without_ohlcv(tmp_path):
     assert loaded["config_digest"] == payload["config_digest"]
     with pytest.raises(ValueError, match="date mismatch"):
         load_review_trace_artifact(path, date(2026, 5, 11))
+
+
+def test_review_trace_records_signal_day_momentum() -> None:
+    """L2 算过的 RPS 必须落进 trace。
+
+    同动量随机对照要的就是这两个数;不留下来,事后只能拿全市场当对照,
+    会把择时读成选股(memory full-market-control-confounds-momentum)。
+    """
+    frame = pd.DataFrame(
+        {
+            "date": pd.bdate_range("2025-08-01", periods=220),
+            "close": [10.0] * 219 + [13.5],
+            "amount": [100_000_000.0] * 220,
+        }
+    )
+    inputs = SimpleNamespace(
+        cfg=FunnelConfig(),
+        window=SimpleNamespace(end_trade_date=date(2026, 5, 12)),
+        pool=SimpleNamespace(symbols=["000001"]),
+        ref_data=SimpleNamespace(
+            name_map={"000001": "平安银行"},
+            sector_map={"000001": "银行"},
+            market_cap_map={"000001": 100.0},
+            financial_map={},
+        ),
+        all_df_map={"000001": frame},
+        layers=SimpleNamespace(
+            l1_passed=["000001"],
+            l2_passed=["000001"],
+            l3_passed=["000001"],
+            l2_channel_map={"000001": "主升通道"},
+            l2_rejections={},
+            rps_fast_map={"000001": 92.5},
+            rps_slow_map={"000001": 88.125},
+        ),
+        candidates=SimpleNamespace(candidate_entries=[], exit_signals={}, l3_score_map={"000001": 0.63}),
+    )
+
+    row = build_review_trace(inputs, {}, {})["symbols"]["000001"]
+
+    assert row["rps_fast"] == 92.5
+    assert row["rps_slow"] == 88.125
+    assert row["close"] == 13.5
+    assert row["layer3_quality_score"] == 0.63
+    assert row["shadow_lane"] == "pre_breakout"
 
 
 def test_replay_context_from_trace_uses_recorded_decision_reason():

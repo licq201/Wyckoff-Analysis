@@ -48,6 +48,7 @@ from cli.loop_guard import (
 from cli.prepare_tool_call import PrepareDecision, accept, prepare_allowed_tools, prepare_exists, reject
 from cli.providers.base import LLMProvider
 from cli.scratchpad import AgentScratchpad
+from cli.text_repair import StreamTextRepair, repair_text
 from cli.tool_results import format_tool_result_for_context
 from cli.tools import ToolRegistry
 from cli.usage_metrics import as_int, enrich_usage, generation_seconds
@@ -130,6 +131,42 @@ def _iter_with_timeout(stream, timeout: float, cancel_check: Callable[[], bool] 
         raise
 
 
+# 哪些流式字段是「一段正文的一部分」，会被网关拆到两个 chunk 里。
+_STREAM_TEXT_FIELDS = ("text_delta", "thinking_delta")
+
+
+def _repair_split_chars(stream):
+    """接上被网关拆到两个 chunk 里的字符，落单的代理字符换成 U+FFFD。
+
+    在这里做而不是各 provider 里做：三家 provider 都可能遇到，而下游 IPC、
+    SQLite、JSONL 全是 strict UTF-8，漏一处就是整轮回答变一行报错。
+    """
+    repairs = {event_type: StreamTextRepair() for event_type in _STREAM_TEXT_FIELDS}
+
+    def flush_all() -> Iterator[RuntimeEvent]:
+        # 流结束在半个字符上时，攥着的尾巴要放出来，否则那点内容凭空消失。
+        for event_type, repair in repairs.items():
+            if tail := repair.flush():
+                yield {"type": event_type, "text": tail}
+
+    for chunk in stream:
+        chunk_type = chunk.get("type") if isinstance(chunk, dict) else None
+        if repair := repairs.get(chunk_type):
+            # 攥住尾巴等下一块拼上，所以这块可能什么都不剩 —— 那就别发空事件。
+            if fixed := repair.feed(str(chunk.get("text") or "")):
+                yield {**chunk, "text": fixed}
+            continue
+        # 出现非正文事件说明这一段正文到此为止，攥着的尾巴得先放出来，才能保持
+        # 「尾巴在前、本块在后」的顺序。
+        yield from flush_all()
+        if isinstance(chunk, dict) and isinstance(chunk.get("text"), str):
+            # tool_calls 也带 text，是 provider 自己累计的原始串，没走上面的逐块修复。
+            yield {**chunk, "text": repair_text(chunk["text"])}
+        else:
+            yield chunk
+    yield from flush_all()
+
+
 @dataclass
 class RoundState:
     text: str = ""
@@ -155,6 +192,7 @@ class RunState:
     incomplete_tool_retries: int = 0
     auto_continuations: int = 0
     answer_parts: list[str] = field(default_factory=list)
+    thinking_parts: list[str] = field(default_factory=list)
     continuation_limit_hint: str = ""
     used_tools: list[tuple[str, dict]] = field(default_factory=list)
     recent_calls: list[tuple[str, int]] = field(default_factory=list)
@@ -465,8 +503,14 @@ class AgentRuntime:
             self._note_continuation_limit(state, round_state, decision.reason)
             return False
         state.auto_continuations += 1
-        if round_state and round_state.text:
-            state.answer_parts.append(round_state.text)
+        if round_state and (round_state.text or round_state.thinking):
+            if round_state.text:
+                state.answer_parts.append(round_state.text)
+            if round_state.thinking:
+                # 续写会丢掉带 CONTINUATION_PARTIAL 的中间条；推理链先攒到
+                # thinking_parts，收尾时写回最终 assistant，满足 DeepSeek tools
+                # 场景必须回传 reasoning_content 的协议。
+                state.thinking_parts.append(round_state.thinking)
             partial: dict[str, Any] = {
                 "role": "assistant",
                 "content": round_state.text,
@@ -476,6 +520,7 @@ class AgentRuntime:
                 partial["reasoning_content"] = round_state.thinking
             messages.append(partial)
             round_state.text = ""
+            round_state.thinking = ""
             round_state.streamed = False
         messages.append({"role": "user", "content": CONTINUATION_PROMPT, _INTERNAL_RETRY_MARKER: True})
         yield {
@@ -507,10 +552,15 @@ class AgentRuntime:
         items = self.steer_drain() if self.steer_drain else []
         if not items:
             return None
-        if round_state and round_state.text:
-            # 打断前的正文是真实对话，必须保留（不能打 internal-retry 删除标记）。
-            messages.append({"role": "assistant", "content": round_state.text})
+        if round_state and (round_state.text or round_state.thinking):
+            # 打断前的正文/推理是真实对话，必须保留（不能打 internal-retry 删除标记）。
+            # DeepSeek thinking + tools 要求后续请求回传 reasoning_content，丢掉会 400。
+            steered: dict[str, Any] = {"role": "assistant", "content": round_state.text or ""}
+            if round_state.thinking:
+                steered["reasoning_content"] = round_state.thinking
+            messages.append(steered)
             round_state.text = ""
+            round_state.thinking = ""
             round_state.streamed = False
         joined = "\n".join(f"- {item}" for item in items)
         prompt = (
@@ -682,7 +732,8 @@ class AgentRuntime:
     ) -> Iterator[RuntimeEvent | RoundState]:
         round_state = RoundState(stream_started=time.monotonic())
         stream = self.provider.chat_stream(messages, self._tool_schemas(), system_prompt)
-        for chunk in _iter_with_timeout(stream, self.stream_chunk_timeout, self.cancel_check):
+        guarded = _repair_split_chars(_iter_with_timeout(stream, self.stream_chunk_timeout, self.cancel_check))
+        for chunk in guarded:
             event = self._consume_model_chunk(round_state, chunk, round_number)
             if event:
                 yield event
@@ -928,7 +979,7 @@ class AgentRuntime:
         round_state: RoundState,
         retry_prompt: str,
     ) -> None:
-        if round_state.text:
+        if round_state.text or round_state.thinking:
             retry_msg: dict[str, Any] = {
                 "role": "assistant",
                 "content": round_state.text,
@@ -955,8 +1006,9 @@ class AgentRuntime:
         messages[:] = [m for m in messages if not m.get(_CONTINUATION_PARTIAL_MARKER)]
         full_text = _merge_answer_text(state.answer_parts, round_state.text)
         final_msg: dict[str, Any] = {"role": "assistant", "content": full_text}
-        if round_state.thinking and not state.answer_parts:
-            final_msg["reasoning_content"] = round_state.thinking
+        thinking = _merge_answer_text(state.thinking_parts, round_state.thinking)
+        if thinking:
+            final_msg["reasoning_content"] = thinking
         messages.append(final_msg)
         return self._done_event(full_text, state, rounds)
 
@@ -1032,6 +1084,8 @@ class AgentRuntime:
             return False
 
         for call in to_run:
+            if self.scratchpad:
+                self.scratchpad.record_tool_start(call["name"], call.get("args") or {}, tool_call_id=call["id"])
             yield self._tool_start_event(call, concurrent=True)
 
         completed: dict[str, dict[str, Any]] = {}
@@ -1154,6 +1208,10 @@ class AgentRuntime:
         call = {**call, "args": prepared.args}
         args = prepared.args
 
+        # 先落意图再执行。顺序很关键：反过来的话，工具执行中途被 kill
+        # 就查不到「这次调用发生过」——而这些工具会真的改持仓、设止损。
+        if self.scratchpad:
+            self.scratchpad.record_tool_start(name, args, tool_call_id=call_id)
         yield self._tool_start_event(call)
         raw = self._execute_tool_call_raw(call, messages)
         yield from self._append_tool_result(
@@ -1323,7 +1381,9 @@ class AgentRuntime:
         status: str,
     ) -> Iterator[RuntimeEvent]:
         if self.scratchpad:
-            self.scratchpad.record_tool_result(name, args, result, duration_ms=elapsed_ms, status=status)
+            self.scratchpad.record_tool_result(
+                name, args, result, duration_ms=elapsed_ms, status=status, tool_call_id=call_id
+            )
 
         content = format_tool_result_for_context(name, call_id, result)
         messages.append(

@@ -4,12 +4,17 @@ from __future__ import annotations
 
 import json
 import math
+from collections.abc import Mapping
 from typing import Any
 
 from core.candidate_policy import candidate_score_value
 from core.candidate_report_semantics import candidate_phase, candidate_role, candidate_theme
 from core.candidate_tracks import (
+    CANDIDATE_PRODUCER_TAGS,
+    WYCKOFF_STAGE_NAMES,
     candidate_entry_key,
+    candidate_entry_score,
+    candidate_entry_sort_key,
     normalize_candidate_entry_key,
     stronger_candidate_entry,
 )
@@ -66,6 +71,51 @@ def build_candidate_metadata_map(
     return result
 
 
+def candidate_lane_dedup_conflicts(candidate_entries: list[dict[str, Any]] | None) -> dict[str, Any]:
+    """数一下同票多车道命中时，按 score 去重和按 entry_type 优先级去重会不会挑出不同的通道。
+
+    ``build_candidate_metadata_map`` 按 code 去重，``stronger_candidate_entry`` 先比 score，
+    只有精确同分才读 ``CANDIDATE_ENTRY_PRIORITY``。但各车道的 score 不同量纲：2026-09-02
+    的候选池里 trend_breakout 中位 98.0、lps 中位 32.0，45 个车道两两组合里有 14 对的
+    score 次序与优先级次序相反。也就是说同票双命中落在这 14 对上时，去重结果与设计意图相反。
+
+    双命中频率无法从产物反推（trace 只存去重后的 entry），所以这里只做观测：纯函数，
+    不改任何去重行为，由调用方打印。频率量出来之前不动 stronger_candidate_entry。
+    """
+    by_code: dict[str, list[dict[str, Any]]] = {}
+    for item in candidate_entries or []:
+        code = code6((item or {}).get("code"))
+        if not code:
+            continue
+        by_code.setdefault(code, []).append(item)
+
+    multi = {code: items for code, items in by_code.items() if len({_lane_of(i) for i in items}) > 1}
+    disagreed: list[dict[str, Any]] = []
+    for code, items in multi.items():
+        by_score = min(items, key=lambda i: (-candidate_entry_score(i), candidate_entry_sort_key(i)))
+        by_priority = min(items, key=candidate_entry_sort_key)
+        if _lane_of(by_score) != _lane_of(by_priority):
+            disagreed.append(
+                {
+                    "code": code,
+                    "score_pick": _lane_of(by_score),
+                    "score_pick_score": candidate_entry_score(by_score),
+                    "priority_pick": _lane_of(by_priority),
+                    "priority_pick_score": candidate_entry_score(by_priority),
+                }
+            )
+    return {
+        "codes": len(by_code),
+        "multi_lane_codes": len(multi),
+        "disagreed_codes": len(disagreed),
+        "details": sorted(disagreed, key=lambda d: d["code"])[:20],
+    }
+
+
+def _lane_of(item: Mapping[str, Any]) -> str:
+    return candidate_entry_key(item, fields=("entry_type", "signal_key", "lane"))
+
+
 def build_candidate_signal_metadata_map(
     candidate_entries: list[dict[str, Any]] | None,
     mainline_candidates: list[dict[str, Any]] | None = None,
@@ -108,7 +158,13 @@ def candidate_entry_metadata(item: dict[str, Any], mainline: dict[str, Any] | No
         "entry_type": _text(item.get("entry_type")) or lane,
         "signal_key": candidate_entry_key(item, fields=("signal_key", "lane", "entry_type"))
         or normalize_candidate_entry_key(lane),
-        "candidate_status": _text(item.get("state")) or _text((mainline or {}).get("status")),
+        # candidate_status 是语义状态位（主线买点候选 / 过热不追 / AI复核候选…），
+        # 下游 TRADEABLE_MAINLINE_STATUSES 按它放行推荐写入。item["state"] 是生产者
+        # 标签（formal_l4/alpha/Lane/Mainline），照抄进来会把这一列变成 candidate_lane
+        # 的副本：实测 7318 行里 6391 行存的是标签，且 stage 已知时被 Accum_B/Accum_C
+        # 顶掉，连 formal_l4 这个标记本身都丢了 104 行。通道信息由 candidate_lane 承载，
+        # stage 由 stage 列承载，这里只取语义状态。
+        "candidate_status": _semantic_status(item) or _text((mainline or {}).get("status")),
         "candidate_timing": _text(item.get("timing")) or _text((mainline or {}).get("entry_type")),
         "candidate_risk": _text(item.get("risk")) or _join_texts((mainline or {}).get("risk_flags")),
         "candidate_reasons": _json_object(_candidate_reason_payload(item, mainline)),
@@ -243,6 +299,19 @@ def _optional_float(raw: Any) -> float | None:
 def _text(raw: Any) -> str | None:
     text = str(raw or "").strip()
     return text or None
+
+
+def _semantic_status(item: dict[str, Any]) -> str | None:
+    """取候选条目上的语义状态，滤掉生产者标签与 Wyckoff 阶段名。
+
+    ``state`` 这一个字段同时承载了两种东西：``_formal_candidate_entries`` 写的是
+    ``stage_map`` 命中时的阶段名、否则是 ``"formal_l4"``；alpha/Lane/Mainline 三条
+    产出路径写的是各自的通道标签。两者都不是候选状态，不该进 candidate_status。
+    """
+    state = _text(item.get("state"))
+    if state is None or state in CANDIDATE_PRODUCER_TAGS or state in WYCKOFF_STAGE_NAMES:
+        return None
+    return state
 
 
 def _join_texts(raw: Any) -> str | None:

@@ -118,9 +118,11 @@ def missing_llm_config(provider: str, step3_skip_llm: bool, skip_step4: bool, st
 def log_llm_config(provider: str, llm_base_url: str, base_url_env_key: str, logs_path: str | None, log_fn) -> None:
     if provider in OPENAI_COMPATIBLE_BASE_URLS:
         log_fn(f"LLM base_url: {llm_base_url or '(empty)'} (env={base_url_env_key})", logs_path)
-    efficiency_model = _efficiency_fallback_model()
-    if provider == "gemini" and efficiency_model:
-        log_fn(f"Step3 Efficiency 兜底已配置: model={efficiency_model}", logs_path)
+    fallback = _step3_fallback_default(provider)
+    if _provider_ready(fallback):
+        _, model, _ = get_provider_credentials(fallback)
+        label = {"gemini": "Gemini", "efficiency": "Efficiency"}.get(fallback, fallback)
+        log_fn(f"Step3 {label} 兜底已配置: model={model}", logs_path)
 
 
 def daily_job_preflight_exit_code(args: argparse.Namespace, cfg: DailyJobConfig, log_fn: Callable) -> int | None:
@@ -143,13 +145,6 @@ def daily_job_preflight_exit_code(args: argparse.Namespace, cfg: DailyJobConfig,
     log_llm_config(cfg.provider, cfg.llm_base_url, cfg.base_url_env_key, cfg.logs_path, log_fn)
     log_fn(f"Step4 LLM: provider={cfg.step4_provider}, model={cfg.step4_model or '(missing)'}", cfg.logs_path)
     return None
-
-
-def _efficiency_fallback_model() -> str:
-    api_key = os.getenv("EFFICIENCY_API_KEY", "").strip()
-    model = os.getenv("EFFICIENCY_MODEL", "").strip()
-    base_url = os.getenv("EFFICIENCY_BASE_URL", "").strip()
-    return model if api_key and model and base_url else ""
 
 
 def _provider_ready(provider: str) -> bool:

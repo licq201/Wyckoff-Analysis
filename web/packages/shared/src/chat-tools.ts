@@ -13,6 +13,8 @@ import {
   type ValueSnapshot,
 } from './agent-market'
 import { buildValuePrompt, buildValueScore } from './agent-value'
+import { resolveExecutionGate } from './market-regime-gate'
+import { checkPriceBasis, formatPriceBasisNote } from './price-basis'
 import {
   attributionFormalDynamicLabel,
   attributionGovernorStatusLabel,
@@ -30,6 +32,14 @@ import {
   type PatternReviewRow,
 } from './pattern-review'
 import { ANALYSIS_CONTEXT_PACK_SCHEMA, buildStockAnalysisContextPack } from './analysis-context'
+import {
+  fetchEastMoneyStockNews,
+  selectStockNewsHeadlines,
+  type NewsEventKind,
+  type NewsSentiment,
+  type StockNewsHeadline,
+} from './news-chart-events'
+import { WYCKOFF_CHART_PLAN_SCHEMA, validateChartPlan } from './wyckoff-chart-plan'
 import { marketWatchSymbol, normalizeMarketWatchCode, readFreshMarketWatchSnapshot, type MarketWatchQuote, type MarketWatchSnapshot } from './market-watch'
 import { refreshPortfolioTotalEquity } from './portfolio-valuation'
 
@@ -108,6 +118,7 @@ export const ANALYZE_STOCK_OUTPUT_SCHEMA = z.object({
     fallbackUsed: z.boolean(),
   }).nullable().optional(),
   context_pack: ANALYSIS_CONTEXT_PACK_SCHEMA.nullable().optional(),
+  chart_plan: WYCKOFF_CHART_PLAN_SCHEMA.nullable().optional(),
 })
 
 export const STRATEGY_POLICY_OUTPUT_SCHEMA = z.object({
@@ -616,14 +627,7 @@ export async function execMarketOverview(deps: ToolDeps): Promise<string> {
   }
   const regime = String(merged.benchmark_regime || 'UNKNOWN').toUpperCase()
   const premarket = String(merged.premarket_regime || 'UNKNOWN').toUpperCase()
-  const blockedRegimes = new Set(['UNKNOWN', 'RISK_ON', 'BEAR_REBOUND', 'PANIC_REPAIR', 'RISK_OFF', 'CRASH', 'BLACK_SWAN'])
-  const hardPremarket = new Set(['UNKNOWN', 'RISK_OFF', 'BLACK_SWAN'])
-  const blocked = blockedRegimes.has(regime) || hardPremarket.has(premarket)
-  const executionGate = blocked
-    ? '执行闸门：禁止新开仓，只管理已有仓位'
-    : premarket === 'CAUTION' || regime === 'CAUTION'
-      ? '执行闸门：仅允许二次确认后的 PROBE，禁止 ATTACK'
-      : '执行闸门：允许 confirmed 候选进入 OMS 复核'
+  const executionGate = resolveExecutionGate(regime, premarket).text
   const close = Number(merged.main_index_close || 0)
   const pct = Number(merged.main_index_today_pct || 0)
   const a50Close = Number(merged.a50_close || 0)
@@ -706,6 +710,56 @@ function buildMarketHistoryDigest(name: string, rows: KlineRow[]): string {
     ...recent,
     '```',
   ].join('\n')
+}
+
+/**
+ * 拉个股近期消息,供 Step 1.5 核证结构判断。
+ *
+ * 为什么不用 web_search:那个是 provider 侧工具,只在 DeepSeek Responses 通道
+ * 挂得上(见 chat-language-model 的 providerTools)。走 chat 通道时它整个不存在,
+ * 核证一步就断了。这个走东财接口,两条通道都在。
+ *
+ * 定位是核证,不是选股依据 —— 先有量价结构结论,再看消息能不能对上。所以输出
+ * 里明写这一句,不让模型倒过来用。
+ */
+export async function execStockNews(deps: ToolDeps, code: string, name: string | null, limit: number): Promise<string> {
+  const normalized = normalizeCode(code)
+  if (!isCnSymbol(normalized)) {
+    return `${code} 不是 A 股 6 位代码。个股消息检索目前只覆盖 A 股（数据源为东方财富），港股/美股请用其它工具或公开信息。`
+  }
+  const rows = await fetchEastMoneyStockNews(normalized, deps.fetch).catch(() => null)
+  if (rows === null) return `消息源暂时不可用，未能取到 ${normalized} ${name || ''} 的消息。不要据此断定「没有消息」。`
+  const headlines = selectStockNewsHeadlines(rows, Math.min(Math.max(limit, 1), 20), normalized, name || '')
+  if (headlines.length === 0) {
+    return `未检索到 ${normalized} ${name || ''} 的相关消息（已过滤涨停板、龙虎榜、盘后集锦这类无事件内核的标题）。这说明检索没有命中，不等于确实无事发生。`
+  }
+  return [
+    `${normalized} ${name || ''} 近期消息 ${headlines.length} 条（来源：东方财富，按发布日倒序）`,
+    '用途：核证量价结构判断。先有结构结论，再看消息能否对上；不要反过来用消息推结构。',
+    '注意：发布日是自然日，未贴到交易日；周末与盘后消息通常反映在下一交易日。',
+    '',
+    ...headlines.map(formatNewsHeadlineLine),
+  ].join('\n')
+}
+
+function formatNewsHeadlineLine(row: StockNewsHeadline): string {
+  const tags = [row.kind ? NEWS_KIND_LABEL[row.kind] : '未归类', NEWS_SENTIMENT_LABEL[row.sentiment]].join('/')
+  return [`- ${row.date} [${tags}] ${row.title}`, row.summary ? `  摘要：${row.summary}` : ''].filter(Boolean).join('\n')
+}
+
+const NEWS_KIND_LABEL: Record<NewsEventKind, string> = {
+  regulatory: '监管',
+  risk: '风险',
+  earnings: '业绩',
+  holder: '股东',
+  deal: '交易',
+}
+
+const NEWS_SENTIMENT_LABEL: Record<NewsSentiment, string> = {
+  bullish: '偏多',
+  bearish: '偏空',
+  mixed: '多空混杂',
+  unknown: '中性',
 }
 
 export async function execQueryRecommendations(deps: ToolDeps, limit: number): Promise<string> {
@@ -1325,6 +1379,18 @@ function booleanValue(value: unknown): boolean | null {
   return typeof value === 'boolean' ? value : null
 }
 
+/** 取不复权实时最新价,只用于核对复权口径。取不到就返回 null,不猜。 */
+async function fetchLivePrice(deps: ToolDeps, code: string, tickflowKey: string | null): Promise<number | null> {
+  if (!tickflowKey) return null
+  const quotes = await fetchQuotes(deps, tickflowKey, [{ code }])
+    .catch((): Record<string, Record<string, number>> => ({}))
+  const normalized = normalizePortfolioCode(code) || normalizeCode(code)
+  const row = quotes[normalized] || quotes[normalizeTickFlowSymbol(normalized)]
+  if (!row) return null
+  const price = row.last_price || row.close || row.last || row.price || row.current || 0
+  return Number.isFinite(price) && price > 0 ? price : null
+}
+
 export async function execAnalyzeStock(
   deps: ToolDeps, userId: string, _config: LLMToolConfig, model: unknown, code: string, name: string | null,
 ): Promise<AnalyzeStockResult> {
@@ -1341,10 +1407,17 @@ export async function execAnalyzeStock(
     return buildAnalyzeError(code, name, `无法获取 ${code} ${name || ''} 的K线数据。美股/港股请使用 TickFlow 标准代码（如 AAPL.US / 00700.HK）。推荐购买 TickFlow 获取实时行情：https://tickflow.org/auth/register?ref=5N4NKTCPL4`)
   }
 
+  // 结构价位来自前复权，报单价必须是不复权实时价。两把尺子悄悄错开会把
+  // 除权前的价位当成挂单价报出去，所以先核一遍。
+  const basisNote = formatPriceBasisNote(checkPriceBasis(
+    kline[kline.length - 1]?.close ?? null,
+    await fetchLivePrice(deps, code, keys.tickflow),
+  ))
   const digest = [
     `数据来源：${quality.source === 'tickflow' ? 'TickFlow' : quality.source === 'tushare' ? 'Tushare' : quality.source}`,
     `数据覆盖：${quality.coverageStart || '未知'} 至 ${quality.coverageEnd || '未知'}；最新交易日：${quality.latestTradingDate || '未知'}；返回 ${quality.returnedRows}/${quality.requestedRows} 根${quality.fallbackUsed ? '；已发生数据源回退' : ''}`,
     buildKlineDigest(kline),
+    basisNote,
   ].join('\n')
   const valueDigest = buildValueAgentDigest(valueSnapshot)
   const contextPack = buildStockAnalysisContextPack({ symbol: code, name, kline, dataQuality: quality, valueSnapshot })
@@ -1357,7 +1430,13 @@ export async function execAnalyzeStock(
 6. 主力行为判断（是否有吸筹/出货迹象）
 7. 操作建议与风险提示（含建议止损位）
 
-按结构化 schema 输出。markdown 字段保留一段简洁专业的 Markdown 诊断正文。`
+按结构化 schema 输出。markdown 字段保留一段简洁专业的 Markdown 诊断正文。
+
+chart_plan 字段用于前端作图，填写规则：
+- phases：威科夫阶段划分。判断不出来的阶段就不要填，五个阶段不必凑齐；宁可少标一段，不要硬套。structure 用 accumulation/distribution/markup/markdown，日期用 YYYY-MM-DD 且必须落在上面给出的数据覆盖区间内。
+- events：关键事件，date 必须是数据里真实存在的交易日。term 填威科夫术语原文（SC/AR/ST/Spring/SOS/LPS/UTAD/BC 等），reason 用中文一句话说明判为该术语的理由。
+- forecast：未来 30 个交易日的推演，targetPrice 是 horizon 末端目标价，与 K 线同为前复权口径。看不出方向就填 sideways，判断不了就整个填 null。
+- 不要输出价格带或逐日预测数值，这两项由程序从 K 线算出。`
   const userPrompt = `${valueDigest}\n\n${digest}`
   try {
     const result = await deps.generateText({
@@ -1366,14 +1445,14 @@ export async function execAnalyzeStock(
       prompt: userPrompt,
       output: Output.object({ schema: ANALYZE_STOCK_OUTPUT_SCHEMA }),
     })
-    return withAnalyzeQuality(normalizeAnalyzeOutput(result.output, result.text), quality, contextPack)
+    return withAnalyzeQuality(normalizeAnalyzeOutput(result.output, result.text), quality, contextPack, kline)
   } catch {
     const fallback = await deps.generateText({
       model: model as Parameters<typeof GenerateTextFn>[0]['model'],
       system: systemPrompt + '\n\n请用纯 JSON 输出，字段: summary, phase, confidence, support, resistance, action, risk, markdown。',
       prompt: userPrompt,
     })
-    return withAnalyzeQuality(parseAnalyzeFallback(fallback.text, code, name), quality, contextPack)
+    return withAnalyzeQuality(parseAnalyzeFallback(fallback.text, code, name), quality, contextPack, kline)
   }
 }
 
@@ -1393,13 +1472,20 @@ function buildAnalyzeError(code: string, name: string | null, message: string): 
   }
 }
 
-function withAnalyzeQuality(result: AnalyzeStockResult, quality: KlineDataQuality, contextPack?: AnalyzeStockResult['context_pack']): AnalyzeStockResult {
+function withAnalyzeQuality(
+  result: AnalyzeStockResult,
+  quality: KlineDataQuality,
+  contextPack?: AnalyzeStockResult['context_pack'],
+  kline?: KlineRow[],
+): AnalyzeStockResult {
   return {
     ...result,
     data_source: quality.source,
     data_asof: quality.latestTradingDate,
     data_quality: quality,
     context_pack: contextPack,
+    // 模型给的日期会编。落在 K 线之外的阶段和事件在这里就丢掉,不要带到前端去画。
+    chart_plan: result.chart_plan && kline?.length ? validateChartPlan(result.chart_plan, kline) : null,
   }
 }
 

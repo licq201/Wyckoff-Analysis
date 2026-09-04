@@ -70,6 +70,10 @@ Modern React SPA with AI Agent chat, portfolio management, funnel screening, rec
 
 The pattern-review page reads the latest 30 review dates present in the database. The record count preserves source rows, the total-selection count uses unique symbol-date occurrences, and covered-stock and return summaries are deduplicated by symbol.
 
+### Desktop
+
+The Electron desktop workspace brings Agent chat, portfolio, schedules, tracking, attribution, reports, and K-line charts into one local application. Write operations are confirmed inline in the conversation and executed in the same turn — no separate approval page to navigate to; a read-only record of past decisions lives under Records. Public downloads belong on [GitHub Releases](https://github.com/YoungCan-Wang/WyckoffTradingAgent/releases); Settings → General → Software updates shows the installed version and links a newer `desktop-v*` release when available. Routine PR/main CI runs cross-platform Electron tests without building installers. Windows x64 and macOS Intel/Apple Silicon packages with the bundled Python runtime are built only for an explicitly requested one-day candidate or a `desktop-release` Skill invocation. Public packages deliberately use the zero-cost unsigned Windows / ad-hoc-signed macOS path and disclose the resulting operating-system warnings. See [DESKTOP_RELEASE.md](DESKTOP_RELEASE.md) for on-demand publishing, storage cleanup, and release requirements.
+
 **Streamlit MVP retired**: Streamlit is no longer maintained on `main`. The historical runtime code is preserved on the `release/streamlit` branch, and the MVP product architecture/screenshots are archived in [STREAMLIT_MVP_ARCHITECTURE.md](STREAMLIT_MVP_ARCHITECTURE.md).
 
 ## Features
@@ -249,7 +253,7 @@ Daily automations (GitHub Actions plus Codex Automation):
 
 ## Model Support
 
-**CLI**: Gemini / Claude / OpenAI — switch with `/model`; any OpenAI-compatible endpoint works (DeepSeek, Qwen, Kimi, etc.).
+**CLI**: Gemini / Claude / OpenAI-compatible endpoints plus a dedicated official DeepSeek V4 adapter. DeepSeek Flash/Pro support `off/low/high/max` reasoning effort and a 1M context window. Retired official aliases are migrated with their prior reasoning semantics, while custom proxy endpoints keep generic OpenAI-compatible request fields.
 
 **Web / Pipeline**: 1Route / Gemini / OpenAI / Zhipu / Minimax / DeepSeek / Qwen / Volcengine. Kimi and other OpenAI-compatible providers can be configured via custom `base_url` / `custom_providers`.
 
@@ -268,7 +272,7 @@ Advanced configuration (`.env` file or GitHub Actions Secrets):
 | `PORTFOLIO_HKD_CNY_RATE` / `PORTFOLIO_USD_CNY_RATE` | Optional broker FX overrides for CNY portfolio valuation; ECB reference rates are used otherwise | Optional |
 | `FEISHU_WEBHOOK_URL` | Feishu push notifications | Optional |
 | `TG_BOT_TOKEN` + `TG_CHAT_ID` | Telegram push notifications | Optional |
-| `CHAT_TOOL_APPROVAL_SECRET` | Dedicated Web tool-approval signing secret; recommended. A one-way domain-separated key is derived from the service-role secret during migration | Recommended for Web chat |
+| `CHAT_TOOL_APPROVAL_SECRET` | Dedicated Web tool-approval signing secret, at least 32 characters; never reuse or derive it from the Supabase service-role key | Required for production Web chat |
 
 > Data source: [TickFlow →](https://tickflow.org/auth/register?ref=5N4NKTCPL4) | LLM API: [1Route →](https://www.1route.dev/register?aff=359904261)
 

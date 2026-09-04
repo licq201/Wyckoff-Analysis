@@ -76,8 +76,6 @@ class FunnelRenderContext:
     accum_stage_map: dict[str, str]
     exit_signals: dict[str, dict]
     sector_rotation_map: dict[str, dict]
-    etf_metrics: dict
-    etf_candidates: list[dict]
     report_maps: FunnelReportMaps
     theme_l4_count: int
     theme_radar_source: str
@@ -126,6 +124,15 @@ class _ReviewScoreContext:
     code_to_trigger_keys: dict[str, list[str]]
     code_to_total_score: dict[str, float]
     sorted_codes: list[str]
+
+
+@dataclass(frozen=True)
+class _ThemeMaps:
+    theme_candidate_map: dict
+    theme_badge_map: dict[str, str]
+    theme_bonus_map: dict[str, float]
+    capital_migration_bonus_map: dict[str, float]
+    capital_migration_badge_map: dict[str, str]
 
 
 @dataclass(frozen=True)
@@ -262,6 +269,50 @@ def _build_report_maps(
     )
 
 
+def rebuild_report_maps(
+    metrics: dict,
+    *,
+    name_map: dict[str, str] | None = None,
+    sector_map: dict[str, str] | None = None,
+    triggers: dict[str, list[tuple[str, float]]] | None = None,
+) -> FunnelReportMaps:
+    """从 metrics 复原报告字段族映射,不触发任何网络 I/O。
+
+    `build_render_context` 只在渲染期存在,`FunnelReportMaps` 不进 step2_details,
+    所以绕过 `build_symbol_report_row` 的写入方(起跳板/跨日确认)拿不到行业轮动、
+    主题、资金迁移、离场信号字段。这里用同一套纯函数复原,name_map/sector_map 由
+    调用方从 step2_details 传入,避免重复 `load_stock_name_map()`/`fetch_sector_map()`。
+    """
+    themes = _theme_maps(metrics)
+    pools = _metric_pools(metrics)
+    score_ctx = _build_review_score_context(
+        metrics,
+        triggers or {},
+        pools.strategic_pool,
+        pools.bypass_triggers,
+        pools.strategic_triggers,
+        pools.candidate_entry_map,
+        themes.theme_badge_map,
+        themes.theme_bonus_map,
+        themes.capital_migration_badge_map,
+        themes.capital_migration_bonus_map,
+        benchmark_context=metrics.get("benchmark_context", {}) or {},
+    )
+    return _build_report_maps(
+        name_map or {},
+        sector_map or {},
+        pools.sector_rotation_map,
+        pools.exit_signals,
+        metrics.get("latest_close_map", {}) or {},
+        themes.theme_candidate_map,
+        themes.theme_bonus_map,
+        score_ctx,
+        themes.theme_badge_map,
+        themes.capital_migration_bonus_map,
+        metrics.get("layer3_score_map", {}) or {},
+    )
+
+
 def _build_review_score_context(
     metrics: dict,
     triggers: dict[str, list[tuple[str, float]]],
@@ -316,8 +367,23 @@ def _base_render_context(
 ]:
     benchmark_context = metrics.get("benchmark_context", {}) or {}
     name_map, sector_map, latest_close_map = _load_run_reference_maps(metrics, benchmark_context)
+    themes = _theme_maps(metrics)
+    return (
+        benchmark_context,
+        name_map,
+        sector_map,
+        latest_close_map,
+        themes.theme_candidate_map,
+        themes.theme_badge_map,
+        themes.theme_bonus_map,
+        themes.capital_migration_bonus_map,
+        themes.capital_migration_badge_map,
+    )
+
+
+def _theme_maps(metrics: dict) -> _ThemeMaps:
+    """主题/资金迁移映射,纯函数(只读 metrics),离线复原报告字段族时可复用。"""
     theme_candidate_map = build_theme_candidate_map(metrics.get("theme_radar") or {})
-    theme_badge_map = build_theme_badge_map(theme_candidate_map)
     theme_bonus_map = build_theme_bonus_map(theme_candidate_map, FUNNEL_THEME_RADAR_BONUS_MAX)
     capital_migration_bonus_map = build_capital_migration_bonus_map(
         theme_candidate_map,
@@ -325,20 +391,15 @@ def _base_render_context(
         bonus_max=FUNNEL_CAPITAL_MIGRATION_BONUS_MAX,
         penalty_max=FUNNEL_CAPITAL_MIGRATION_PENALTY_MAX,
     )
-    capital_migration_badge_map = build_capital_migration_badge_map(
-        theme_candidate_map,
-        capital_migration_bonus_map,
-    )
-    return (
-        benchmark_context,
-        name_map,
-        sector_map,
-        latest_close_map,
-        theme_candidate_map,
-        theme_badge_map,
-        theme_bonus_map,
-        capital_migration_bonus_map,
-        capital_migration_badge_map,
+    return _ThemeMaps(
+        theme_candidate_map=theme_candidate_map,
+        theme_badge_map=build_theme_badge_map(theme_candidate_map),
+        theme_bonus_map=theme_bonus_map,
+        capital_migration_bonus_map=capital_migration_bonus_map,
+        capital_migration_badge_map=build_capital_migration_badge_map(
+            theme_candidate_map,
+            capital_migration_bonus_map,
+        ),
     )
 
 
@@ -508,8 +569,6 @@ def _render_context_from_parts(parts: _RenderContextParts) -> FunnelRenderContex
         accum_stage_map=parts.metrics.get("accum_stage_map", {}) or {},
         exit_signals=parts.exit_signals,
         sector_rotation_map=parts.sector_rotation_map,
-        etf_metrics=parts.metrics.get("etf_enhancement", {}) or {},
-        etf_candidates=parts.metrics.get("etf_candidates", []) or [],
         report_maps=parts.report_maps,
         theme_l4_count=sum(1 for c in parts.formal_hit_set if c in parts.theme_candidate_map),
         theme_radar_source=str(parts.metrics.get("theme_radar_source") or "current"),

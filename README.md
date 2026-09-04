@@ -80,7 +80,7 @@ wyckoff          # 启动 Agent 对话
 wyckoff dashboard  # 启动本地可视化面板
 ```
 
-启动后 `/model` 选择模型（Gemini / Claude / OpenAI），输入 API Key 即可对话。
+启动后 `/model` 选择模型（Gemini / Claude / OpenAI / DeepSeek V4），输入 API Key 即可对话。DeepSeek 官方适配支持 Flash/Pro、`off/low/high/max` 思考强度和 1M 上下文；旧 `deepseek-chat` / `deepseek-reasoner` 配置会按原模式迁移，自定义代理不会被注入官方专用字段。
 
 <p align="center">
   <img src="attach/cli-home.png" alt="CLI 启动界面" width="900" />
@@ -120,7 +120,13 @@ wyckoff dashboard  # 启动本地可视化面板
 
 </details>
 
-形态复盘页按数据库实际存在的最近 30 个复盘交易日读取数据：“复盘记录”保留窗口内的数据源行数，“总入选次数”按唯一的股票+入选日统计，“覆盖股票数”和涨跌幅摘要则按股票代码去重。单股分析页会把规则过滤后的关键新闻打到 K 线上，只作读盘解释，不改变漏斗候选。服务端报错进 Cloudflare Workers Logs（约 3 天）；页面 PV/UV 用 Web Analytics；白名单用户的点击热力图走 Clarity 项目 `y6albpfin1`。这三样都不写业务库。
+形态复盘页按数据库实际存在的最近 30 个复盘交易日读取数据：“复盘记录”保留窗口内的数据源行数，“总入选次数”按唯一的股票+入选日统计，“覆盖股票数”和涨跌幅摘要则按股票代码去重。单股分析页会把规则过滤后的关键新闻打到 K 线上，只作读盘解释，不改变漏斗候选。服务端报错进 Cloudflare Workers Logs（约 3 天）；页面 PV/UV 用 Web Analytics；星球会员的点击热力图走 Clarity 项目 `y6albpfin1`。这三样都不写业务库。
+
+### Desktop
+
+Electron 桌面端把 Agent 对话、持仓、定时任务、跟踪归因、报告和 K 线放进同一个本地工作台，支持 Windows x64 与 macOS Intel/Apple Silicon。写操作的确认就在对话里当场问、当场执行（不跳转到别的页面），批过什么在“确认记录”里可查。
+
+公开安装包统一放在 [GitHub Releases](https://github.com/YoungCan-Wang/WyckoffTradingAgent/releases)，不会把 Actions Artifact 当下载站。桌面端在“设置 → 通用 → 软件更新”显示当前版本，发现新的 `desktop-v*` 正式版时会直接给出下载入口。日常 PR/main CI 只跑三平台 Electron 测试，不构建安装包；只有显式手动候选构建或调用 `desktop-release` Skill 发布版本时才构建带真实 Python 运行时的 EXE 和 DMG，手动候选最多保留 1 天。公开包采用零付费的 Windows 未签名 / macOS 临时签名方案，并明确提示系统警告。按需发布、存储清理与升级清单见 [docs/DESKTOP_RELEASE.md](docs/DESKTOP_RELEASE.md)。
 
 ### Streamlit MVP 已下线
 
@@ -244,7 +250,7 @@ wyckoff mcp-list
 - **模型元数据与成本可见性** — `wyckoff model list/usage/cost` 展示上下文窗口、reasoning 能力和本地 token 成本估算；OpenRouter 模型的上下文窗口取自其 `/models` 接口的真实值（`wyckoff model refresh` 刷新），不靠模型名猜
 - **会话分叉与导出** — `wyckoff session export/fork` 或 TUI `/fork` 把历史对话变成可复盘、可继续的新分支
 - **标准事件流** — `wyckoff trace --events <scratchpad.jsonl>` / `wyckoff diag` 产出统一 JSONL，方便复盘工具调用时间线
-- **独立边缘后端** — React 统一调用 Hono Worker；后端提供请求 ID、安全响应头、请求体上限、Redis 共享限流和白名单沙箱任务。读盘室的研究计算必须经用户确认，先进入单并发 Cloudflare Queue，再由签名的 Node 执行桥进入无网络、自动销毁的 Vercel Sandbox；每用户同时仅一个任务，并按日限制创建次数与实际 CPU 用量。Worker 与 bridge 用 `requestId`/`runId` 输出不含脚本与密钥的结构化执行日志，本地支持 VS Code 断点与 `workerd` 集成测试
+- **独立边缘后端** — React 统一调用 Hono Worker；后端提供请求 ID、安全响应头、请求体上限、Redis 共享限流和星球会员沙箱任务。读盘室的研究计算必须经用户确认，先进入单并发 Cloudflare Queue，再由签名的 Node 执行桥进入无网络、自动销毁的 Vercel Sandbox；每用户同时仅一个任务，并按日限制创建次数与实际 CPU 用量。Worker 与 bridge 用 `requestId`/`runId` 输出不含脚本与密钥的结构化执行日志，本地支持 VS Code 断点与 `workerd` 集成测试
 - **观察篮临时行情** — 只为当前问题拉取相关 TickFlow 报价，浏览器快照 45 秒后失效，不写入 Redis 或业务数据库
 - **依赖卫生检查** — CI 运行 `scripts/check_dependency_hygiene.py`，提示 Python/Web 依赖锁定和 lockfile 风险
 - **测试隔离与单次覆盖率** — pytest 不读取本机 `.env`、底层 socket 默认断网；CI 只执行一次 coverage-instrumented Python 全量套件并复用结果生成覆盖率 artifact
@@ -283,6 +289,7 @@ wyckoff mcp-list
 | 信号反馈实现、shadow/on 动态策略 | [docs/SIGNAL_FEEDBACK_LOOP.md](docs/SIGNAL_FEEDBACK_LOOP.md) |
 | 研究路线、证据门槛与晋级治理 | [docs/ITERATION_STRATEGY.md](docs/ITERATION_STRATEGY.md) |
 | 运营成本、规模化预算 | [docs/COST_MODEL.md](docs/COST_MODEL.md) |
+| 星球会员能力、数据契约与线上迁移 | [docs/PLANET_MEMBERSHIP.md](docs/PLANET_MEMBERSHIP.md) |
 | 策略语义：漏斗、AI 研报、OMS、回测 | [README_STRATEGY.md](README_STRATEGY.md) |
 | **实盘操作（日漏斗×次日开盘）** | [docs/OPERATOR_PLAYBOOK.md](docs/OPERATOR_PLAYBOOK.md) |
 | 术语速查 | [GLOSSARY.md](GLOSSARY.md) |
@@ -305,7 +312,7 @@ wyckoff mcp-list
 
 ## 交流
 
-如果你希望免去行情数据源、数据库、云服务器、AI API 和自动化任务的运维成本，可以加入 **「威科夫策略交流学习」知识星球**，使用云端共享入口：多端同步、每日全市场漏斗推送、自动 AI 研报和专属交流社区都由共享基础设施统一承载。
+加入 **「威科夫策略交流学习」知识星球** 后，可把登录账号绑定为星球会员，使用云端持仓、最近 30 个复盘交易日跟踪、策略归因、隔离研究计算、手机遥控、每日漏斗产物和专属交流。模型和数据源 Key 仍由用户自行管理；普通用户也可以自配 Key 使用读盘、单股、多股、手动持仓诊断、导出与本地历史。完整边界见 [docs/PLANET_MEMBERSHIP.md](docs/PLANET_MEMBERSHIP.md)。
 
 年费 **CNY 518/年**，折合每天约 **1.4 元**。518 取“我要发”的好彩头；这笔费用主要用于共同平摊系统运维硬成本，不是投资顾问费，也不构成任何收益承诺。成本明细与风险边界见 [docs/COST_MODEL.md](docs/COST_MODEL.md)。
 

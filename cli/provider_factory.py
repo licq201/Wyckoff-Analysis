@@ -12,6 +12,7 @@ def provider_config_kwargs(config: dict[str, Any]) -> dict[str, Any]:
         "model": config.get("model", ""),
         "base_url": config.get("base_url", ""),
         "context_window": config.get("context_window"),
+        "thinking_level": config.get("thinking_level", ""),
     }
 
 
@@ -21,6 +22,7 @@ def create_provider(
     model: str = "",
     base_url: str = "",
     context_window: int | None = None,
+    thinking_level: str = "",
 ):
     import inspect
 
@@ -32,6 +34,7 @@ def create_provider(
             "gemini": "pip install google-genai",
             "claude": "pip install anthropic",
             "openai": "pip install openai",
+            "deepseek": "pip install openai",
         }
         hint = install_hints.get(provider_name, "")
         return None, f"Provider '{provider_name}' 不可用，请先安装依赖：{hint}"
@@ -41,6 +44,8 @@ def create_provider(
         kwargs["model"] = model
     if base_url:
         kwargs["base_url"] = base_url
+    if thinking_level:
+        kwargs["thinking_level"] = thinking_level
 
     sig = inspect.signature(cls.__init__)
     kwargs = {k: v for k, v in kwargs.items() if k in sig.parameters}

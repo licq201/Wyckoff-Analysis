@@ -33,6 +33,7 @@ jobs:
       FUNNEL_MAX_WORKERS: "4"
       FUNNEL_BATCH_SIZE: "200"
       FUNNEL_BATCH_SLEEP: "0.55"
+      END_CALENDAR_DAY: ${{ github.event.inputs.end_calendar_day || '' }}
       DEFAULT_LLM_PROVIDER: ${{ vars.DEFAULT_LLM_PROVIDER || secrets.DEFAULT_LLM_PROVIDER || 'deepseek' }}
       STEP3_LLM_PROVIDER: ${{ vars.STEP3_LLM_PROVIDER || secrets.STEP3_LLM_PROVIDER || vars.DEFAULT_LLM_PROVIDER || secrets.DEFAULT_LLM_PROVIDER || 'deepseek' }}
       STEP3_LLM_FALLBACK_PROVIDERS: ${{ vars.STEP3_LLM_FALLBACK_PROVIDERS || secrets.STEP3_LLM_FALLBACK_PROVIDERS || '' }}
@@ -72,6 +73,10 @@ jobs:
       SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
       SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
       SUPABASE_USER_ID: ${{ secrets.SUPABASE_USER_ID }}
+      # 影子账本（paper ledger）：shadow_* 五张表与 seed 账户已建好，开启记账。
+      # 只写 USER_SHADOW:*（写入侧有前缀硬断言），挂在 Step4 之后且异常被吞，不影响实盘。
+      # 需要停掉时把 vars.SHADOW_LEDGER_ENABLED 设为 0，不必改 workflow。
+      SHADOW_LEDGER_ENABLED: ${{ vars.SHADOW_LEDGER_ENABLED || '1' }}
       RAG_SEMANTIC_VETO_ENABLED: ${{ vars.RAG_SEMANTIC_VETO_ENABLED || '1' }}
       RAG_SEMANTIC_PROVIDER: ${{ vars.RAG_SEMANTIC_PROVIDER || secrets.RAG_SEMANTIC_PROVIDER || vars.DEFAULT_LLM_PROVIDER || secrets.DEFAULT_LLM_PROVIDER || 'deepseek' }}
       # 实盘风控：ATR/结构止损优先，-12% 仅灾难地板；非主线 5 日时间管理见 holding_time_policy
@@ -146,10 +151,10 @@ jobs:
       TZ: Asia/Shanghai
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v7
         with:
           python-version: "3.11"
           cache: "pip"
@@ -170,7 +175,7 @@ jobs:
 
       - name: Upload artifacts
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: daily-job-artifacts-${{ github.run_number }}
           path: |

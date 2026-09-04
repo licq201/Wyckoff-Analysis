@@ -15,6 +15,10 @@ import { installCloudflareWebAnalytics } from '@/lib/product-analytics'
 
 installCloudflareWebAnalytics()
 
+// 手机遥控页。独立外壳 —— 不套 AppLayout（那是桌面侧栏布局），也不进 AuthGuard
+// 的重定向流程（未登录时它自己显示「需要重新扫码」而不是跳走）。
+const RemotePage = lazy(() => import('@/routes/remote').then(m => ({ default: m.RemotePage })))
+
 const PortfolioPage = lazy(() => import('@/routes/portfolio').then(m => ({ default: m.PortfolioPage })))
 const TrackingPage = lazy(() => import('@/routes/tracking').then(m => ({ default: m.TrackingPage })))
 const AttributionPage = lazy(() => import('@/routes/attribution').then(m => ({ default: m.AttributionPage })))
@@ -23,7 +27,7 @@ const AnalysisPage = lazy(() => import('@/routes/analysis').then(m => ({ default
 const StockBattlePage = lazy(() => import('@/routes/stock-battle').then(m => ({ default: m.StockBattlePage })))
 const HistoryPage = lazy(() => import('@/routes/history').then(m => ({ default: m.HistoryPage })))
 const ExportPage = lazy(() => import('@/routes/export').then(m => ({ default: m.ExportPage })))
-const FeatureGuidePage = lazy(() => import('@/routes/feature-guide').then(m => ({ default: m.FeatureGuidePage })))
+const PlanetMembershipPage = lazy(() => import('@/routes/planet-membership').then(m => ({ default: m.PlanetMembershipPage })))
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -41,6 +45,7 @@ createRoot(document.getElementById('root')!).render(
           <Suspense fallback={<WyckoffLoading />}>
             <Routes>
               <Route path="/login" element={<LoginPage />} />
+              <Route path="/m" element={<RemotePage />} />
               <Route element={<AuthGuard />}>
                 <Route element={<AppLayout />}>
                   <Route index element={<Navigate to="/chat" replace />} />
@@ -52,7 +57,7 @@ createRoot(document.getElementById('root')!).render(
                   <Route path="/battle" element={<StockBattlePage />} />
                   <Route path="/history" element={<HistoryPage />} />
                   <Route path="/export" element={<ExportPage />} />
-                  <Route path="/guide" element={<FeatureGuidePage />} />
+                  <Route path="/membership" element={<PlanetMembershipPage />} />
                   <Route path="/settings" element={<SettingsPage />} />
                 </Route>
               </Route>

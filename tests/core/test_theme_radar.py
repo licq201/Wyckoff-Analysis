@@ -175,18 +175,37 @@ def test_theme_radar_surfaces_fast_rotation_as_shadow_only() -> None:
     assert "Shadow" not in summarize_theme_rotation(snapshot)
 
 
+def test_theme_summaries_drop_leftover_etf_snapshot_lines() -> None:
+    leftover = {
+        "themes": [
+            {"theme": "黄金ETF", "score": 0.88, "state": "observe"},
+            {"theme": "机器人", "score": 0.70, "state": "confirmed"},
+        ],
+        "rotation_watch": [
+            {
+                "theme": "粮食ETF",
+                "rotation_score": 0.91,
+                "rotation_state": "surging",
+                "ret5": 8.6,
+                "advancing_ratio_5d": 0.72,
+            }
+        ],
+    }
+
+    assert "黄金ETF" not in summarize_theme_radar(leftover)
+    assert "机器人" in summarize_theme_radar(leftover)
+    assert "粮食ETF" not in summarize_theme_rotation(leftover)
+    assert summarize_theme_rotation(leftover) == "暂无显著短周期轮动"
+
+
 def test_theme_radar_snapshot_round_trip_local_db(tmp_path, monkeypatch) -> None:
     from integrations import local_db
 
-    if local_db._conn is not None:
-        local_db._conn.close()
-    local_db._conn = None
+    local_db.reset_connection()
     monkeypatch.setattr("core.constants.LOCAL_DB_PATH", tmp_path / "theme.db")
     try:
         local_db.init_db()
         local_db.save_theme_radar_snapshot({"trade_date": "2026-05-27", "themes": [], "strategic_candidates": []})
         assert local_db.load_latest_theme_radar_snapshot()["trade_date"] == "2026-05-27"
     finally:
-        if local_db._conn is not None:
-            local_db._conn.close()
-        local_db._conn = None
+        local_db.reset_connection()

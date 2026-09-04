@@ -27,9 +27,49 @@ from core.ic_shadow_score import (
 
 
 class TestConfig:
-    def test_defaults_are_the_three_stable_factors(self):
+    def test_default_factor_names_exist_in_scanner(self):
+        """**最关键的一条**：权重里的因子名必须真实存在于 build_factors。
+
+        2026-08-24 生产失败就源于此——默认权重写 dry_vol_min10_q250 / vol_ratio_5_20，
+        而 main 上的键是 dry_vol_q250 / vol_ratio，脚本直接 SystemExit「未知因子」。
+        那两个名字来自未合并的本地版本，我按它写了权重却没在 main 上验证。
+        """
+        import pandas as pd
+
+        from scripts.scan_factor_ic import build_factors
+
+        # 造一份最小行情，只为取出因子键集，不关心数值。
+        dates = pd.date_range("2024-01-01", periods=3, freq="B")
+        frame = pd.DataFrame(
+            {
+                "ts_code": ["000001"] * 3,
+                "d": dates,
+                "open": [10.0] * 3,
+                "close": [10.0] * 3,
+                "high": [10.0] * 3,
+                "low": [10.0] * 3,
+                "vol": [100.0] * 3,
+                "amount": [1000.0] * 3,
+            }
+        )
+        available = set(build_factors(frame)[0])
+        missing = {w.name for w in ShadowScoreConfig().weights} - available
+        assert not missing, f"权重引用了不存在的因子: {sorted(missing)}；可选 {sorted(available)}"
+
+    def test_defaults_are_the_stable_factors(self):
         names = {w.name for w in ShadowScoreConfig().weights}
-        assert names == {"rps_fast", "ret60", "dry_vol_min10_q250"}
+        assert names == {"ret60", "dry_vol_q250"}
+
+    def test_does_not_double_count_ret60_and_rps_slow(self):
+        """rps_slow 与 ret60 不得同时入选——两者共享同一份 60 日动量。
+
+        2026-08-30 前 rps_slow 是 ret60 的**全市场**分位，即单调变换，故 Rank IC 逐位
+        相同；此后改为**行业内**分位（见 scan_factor_ic._within_sector_rank），IC 已不再
+        相同（实测差 +0.019）。但底层信号仍是同一个 60 日涨幅，一起加权仍属重复计权，
+        故本约束保留——只是理由从「IC 相同」变成「同源」。
+        """
+        names = {w.name for w in ShadowScoreConfig().weights}
+        assert not {"ret60", "rps_slow"} <= names
 
     def test_all_defaults_are_reverse(self):
         """三个因子 IC 全为负，必须都反向使用。"""
@@ -51,9 +91,8 @@ class TestCombine:
     def _panels(self):
         # A 极弱势极缩量、C 极强势放量——反向打分应把 A 排首位、C 垫底。
         return {
-            "rps_fast": {"A": 3.0, "B": 50.0, "C": 97.0},
             "ret60": {"A": 5.0, "B": 50.0, "C": 95.0},
-            "dry_vol_min10_q250": {"A": 2.0, "B": 50.0, "C": 96.0},
+            "dry_vol_q250": {"A": 2.0, "B": 50.0, "C": 96.0},
         }
 
     def test_weak_and_dry_ranks_first(self):
@@ -70,7 +109,7 @@ class TestCombine:
     def test_drops_codes_missing_any_factor(self):
         """缺值不补 50——否则无信息标的会被抬进 top-N。"""
         panels = self._panels()
-        panels["rps_fast"]["D"] = 1.0  # D 只有一个因子有值
+        panels["ret60"]["D"] = 1.0  # D 只有一个因子有值
         picks = combine_scores(panels, ShadowScoreConfig(top_n=10))
         assert "D" not in {p.code for p in picks}
 
@@ -80,7 +119,8 @@ class TestCombine:
         assert "A" not in {p.code for p in combine_scores(panels, ShadowScoreConfig(top_n=3))}
 
     def test_unknown_factor_ignored(self):
-        picks = combine_scores({"rps_fast": {"A": 1.0}}, ShadowScoreConfig(top_n=3))
+        """只提供部分因子面板时，按可用部分打分（缺全部因子才返回空）。"""
+        picks = combine_scores({"ret60": {"A": 1.0}}, ShadowScoreConfig(top_n=3))
         assert [p.code for p in picks] == ["A"]
 
     def test_no_panels_returns_empty(self):
@@ -117,51 +157,85 @@ class TestObservationRows:
 
         from scripts.run_ic_shadow_pool import to_rows
 
-        pick = ShadowPick("600363.SH", -1.06, 1, {"ret60": 0.0, "rps_fast": 3.0})
+        pick = ShadowPick("600363.SH", -1.06, 1, {"ret60": 0.0, "dry_vol_q250": 3.0})
         payload = json.loads(to_rows([pick], "2026-08-14", ShadowScoreConfig())[0]["features_json"])
         assert payload["ic_shadow_rank"] == 1
-        assert payload["factor_percentiles"]["rps_fast"] == pytest.approx(3.0)
+        assert payload["factor_percentiles"]["dry_vol_q250"] == pytest.approx(3.0)
 
     def test_strategy_version_carries_weights(self):
         """便于事后区分不同权重版本写入的行。"""
         from scripts.run_ic_shadow_pool import to_rows
 
         row = to_rows([ShadowPick("600363.SH", -1.0, 1)], "2026-08-14", ShadowScoreConfig())[0]
-        assert "rps_fast" in row["strategy_version"]
+        assert "ret60" in row["strategy_version"]
 
 
-class TestDailyWorkflow:
-    """影子池已接每日定时——这些用例守住它不会误入下单链路或撞车其它任务。"""
+class TestInlineInFunnel:
+    """影子池已改为在漏斗内联计算（复用 all_df_map），不再有独立 workflow。
 
-    def _workflow(self) -> dict:
+    原独立 workflow 每天自抓 560 天快照，实测 45 分钟；而漏斗本就抓
+    FunnelConfig.trading_days=320 个交易日，足够覆盖最长的 250 日滚动分位。
+    """
+
+    def test_standalone_workflow_removed(self):
         from pathlib import Path
 
-        import yaml
+        assert not Path(".github/workflows/ic_shadow_pool.yml").exists()
 
-        data = yaml.safe_load(Path(".github/workflows/ic_shadow_pool.yml").read_text(encoding="utf-8"))
-        # PyYAML 把 `on:` 解析成布尔 True，这是已知怪癖。
-        return data
+    def test_funnel_computes_shadow_pool(self):
+        from pathlib import Path
 
-    def test_runs_after_main_funnel(self):
-        """必须在主漏斗（北京 17:17 / UTC 9:17）之后，才能用同一交易日的收盘数据。"""
-        data = self._workflow()
-        on = data.get("on") or data.get(True)
-        minute, hour, _dom, _mon, dow = on["schedule"][0]["cron"].split()
-        assert int(hour) > 9 or (int(hour) == 9 and int(minute) > 17)
-        # 与主漏斗同为周日至周四。
-        assert dow == "0-4"
+        src = Path("workflows/wyckoff_funnel.py").read_text(encoding="utf-8")
+        assert "_build_ic_shadow_pool" in src
+        assert 'metrics["ic_shadow"]' in src
 
-    def test_does_not_collide_with_review_replay(self):
-        """review_list_replay 在 UTC 11:25；影子池须早于它，避免争 Tushare 配额。"""
-        data = self._workflow()
-        on = data.get("on") or data.get(True)
-        minute, hour, *_ = on["schedule"][0]["cron"].split()
-        assert (int(hour), int(minute)) < (11, 25)
+    def test_daily_job_persists_shadow_pool(self):
+        from pathlib import Path
 
-    def test_write_context_is_server_job(self):
-        env = self._workflow()["jobs"]["run"]["env"]
-        assert env["WYCKOFF_WRITE_CONTEXT"] == "server_job"
+        src = Path("workflows/daily_job_step3.py").read_text(encoding="utf-8")
+        assert "persist_ic_shadow_pool" in src
 
-    def test_has_timeout(self):
-        """快照抓取 + 打分约 30 分钟；设上限避免卡死占用额度。"""
-        assert self._workflow()["jobs"]["run"]["timeout-minutes"] <= 120
+    def test_funnel_window_covers_longest_factor(self):
+        """漏斗窗口必须够长，否则 dry_vol_q250 的 250 日滚动分位算不出来。"""
+        from core.wyckoff_engine import FunnelConfig
+
+        assert FunnelConfig().trading_days >= 270
+
+    def test_shadow_failure_does_not_break_funnel(self):
+        """影子池是研究支线，异常必须被吞掉。"""
+        from pathlib import Path
+
+        src = Path("workflows/wyckoff_funnel.py").read_text(encoding="utf-8")
+        block = src.split("def _build_ic_shadow_pool")[1].split("def run(")[0]
+        assert "except Exception" in block
+        assert "return []" in block
+
+
+class TestRequiredColumns:
+    """signal_observations 的 NOT NULL 列必须齐全。
+
+    2026-08-24 首次实盘落库被 Postgres 拒绝：
+        null value in column "track" violates not-null constraint
+    当时容错生效、漏斗主流程未受影响，但影子样本丢了一天。
+    """
+
+    def _row(self) -> dict:
+        from core.ic_shadow_score import to_rows
+
+        picks = [ShadowPick("002121.SZ", -1.65, 1, {"ret60": 2.0, "dry_vol_q250": 1.0})]
+        return to_rows(picks, "2026-08-24", ShadowScoreConfig())[0]
+
+    def test_track_present_and_valid(self):
+        """track 仅接受 Trend / Accum。影子池选低位缩量股，语义属吸筹。"""
+        assert self._row()["track"] == "Accum"
+
+    def test_no_none_values(self):
+        """任何 None 都可能撞上 NOT NULL 约束。"""
+        nulls = [k for k, v in self._row().items() if v is None]
+        assert not nulls, f"这些字段为 None，可能违反 NOT NULL: {nulls}"
+
+    def test_upsert_conflict_keys_all_present(self):
+        """upsert 的 on_conflict 是 market,trade_date,code,signal_type——缺一个就报错。"""
+        row = self._row()
+        for key in ("market", "trade_date", "code", "signal_type"):
+            assert row.get(key), key

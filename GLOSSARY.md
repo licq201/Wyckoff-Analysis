@@ -99,7 +99,8 @@
 | **主线回踩 MA5/MA10/MA20** | 主升段优先认短均线回踩，再认 MA20；不再只等年线附近 |
 | **主线趋势书** | 实盘主仓：主题连续 + 高 RPS + 确认买点 |
 | **结构观察书** | Spring/LPS/Compression 等轻仓或观察，默认 5 日兑现 |
-| **mainline_active** | NEUTRAL 交易模式：允许主题晋级与正式推荐，旁路仍关 |
+| **mainline_active** | 交易模式：允许主题晋级与正式推荐，旁路仍关。生产 env 已把 NEUTRAL 加进禁买名单，故该档实际走 `execution_blocked` |
+| **execution_blocked** | 交易模式：水温在 `STEP4_BUY_BLOCK_REGIMES` 里 → 不写正式推荐、不执行新买入，保留 AI/shadow 对照。写入闸门与下单闸门同源，避免「报告说可买、实际买不到」 |
 | **执行纪律卡** | 报告顶部固定文案（`execution_playbook`）：闸门/主线优先/时间管理/灾难地板 |
 | **时间管理** | 非主线约 5 日时间止盈；主线约 15 日 + 破 MA20 再减 |
 | **灾难止损地板** | 新开仓约 -12%，防黑天鹅，**不是**日常洗盘止损 |
@@ -239,6 +240,7 @@ watch_score = 0.25 × q20 + 0.20 × q5 + 0.05 × q3
 | **OMS 人民币口径** | OMS CNY Cash Path | Step4 的 `total_equity` / `free_cash` / 工单 `amount` 按人民币计；港美报价与止损间距先乘汇率再定仓与回笼，避免把美元/港元裸加进人民币预算 |
 | **成交回填汇率** | Trade Fill FX | `record_trade_fill` / `portfolio fill` 对港美成交按报价币→CNY 汇率改 `free_cash`，成本价仍记本币；缺汇率 fail-closed，禁止把外币名义金额写入人民币现金 |
 | **LLM 决策注释** | LLM Decision Note | `llmdoc/` 中经过版本控制、按工作流/股票代码/有效期选择的咨询性上下文；只能提醒模型复核遗漏风险，不得覆盖实时数据、硬止损、市场闸门、候选准入或 OMS |
+| **Step3 研报模型** | Step3 LLM | 漏斗研报主通道默认 Efficiency（低成本兼容通道），失败再试 Gemini（谷歌大模型）；可用 `STEP3_LLM_PROVIDER` / `STEP3_LLM_FALLBACK_PROVIDERS` 覆盖。研报分类不是买入许可 |
 
 ---
 
@@ -252,6 +254,8 @@ watch_score = 0.25 × q20 + 0.20 × q5 + 0.05 × q3
 | **前复权 (qfq)** | 以最新价格为基准向前调整历史价格，消除分红送股导致的价格跳空。回测默认使用前复权数据 |
 | **外部资金佐证** | 正式候选的 observation 特征：龙虎榜及机构/沪深股通席位、融资融券、大宗交易、个股资金流和沪深股通十大成交。只用于解释与 outcome 复盘，不直接改变漏斗、推荐或 OMS。`north_money` 当前按发布金额保存，不解释为北向净买入。 |
 | **应交易覆盖率** | OHLCV 质量门的分母为股票池减去当日确认停牌标的；停牌缺 K 线单列为非交易排除，不再记作接口失败。原始全池缺口仍保留为 `raw_ohlcv` / `fetch_raw_missing` 供审计；换手率、行业和概念映射另有覆盖门槛。 |
+| **脏 K 线守卫** | 入口层处理结构不可能的 bar：`high<low`、最高价低于实体、最低价高于实体、价格非正、成交量为负。分析入口留行并把脏值置空；漏斗批量拉取才丢 bar。默认 `OHLCV_DIRTY_BAR_GUARD=1`。不改漏斗阈值。 |
+| **时点裁切 (as-of / PIT)** | 显式回放（`END_CALENDAR_DAY`）时，A 股漏斗只保留截止日及以前的日线和已公告财务；当天无 bar 的票整只丢掉，无日期财务直接丢弃。周日定时不算回放，不裁 K 线/财务；市值/概念热度仍可按「截止日早于今天」走历史接口。网格回测本身按日切片，不走这条。 |
 
 ## 11. 信号反馈闭环
 
@@ -270,12 +274,13 @@ flowchart LR
 | **Outcome** | Observation 之后 1/3/5/10/20 日的收益和最大回撤，落在 `signal_outcomes`。 |
 | **Health** | 按信号类型聚合后的胜率、均值收益、样本数和权重，落在 `signal_health_daily`。 |
 | **动态影子晋级** | 将当日候选的基础影子分与同信号、同水温的历史健康度合成动态分；通过结构、样本和风险清单后，只获得 Step3 复核席位，不等于正式推荐、跨日确认或 OMS 买入许可。 |
+| **影子账本 (paper shadow ledger)** | 漏斗成功后的纸面对照账户，账户号 `USER_SHADOW:<uuid>`。盘后按 Step4 同口径买许可写下夜 `next_open` 计划，次日开盘价成交，遵守 T+1 / 整手 / 涨跌停 / 费用。只写 `shadow_*` 表，绝不写 `USER_LIVE` 的 `portfolios` / `portfolio_positions` / `trade_orders` / `daily_nav`。飞书卡标题必须带「影子账本 / paper」，与 `ic_shadow`、动态影子分不是同一概念。 |
 | **Registry** | 信号生命周期表，控制信号是 `ACTIVE`、`WATCH`、`EXPERIMENTAL` 还是 `RETIRED`。信号级 `status` 以全局行（`regime=""` / `ALL`）为准；regime 拆分行只承载精确权重并跟随全局生命周期。 |
 | **Shadow Run** | 动态策略旁路演练：真实推荐不变，只记录动态策略会新增或移除哪些候选。 |
 | **Dynamic Policy** | 根据信号健康度、registry 和市场广度，动态调整 Trend / Accum 候选配额。 |
 | **推荐价 / initial_price** | `recommendation_tracking` 中展示用的入场价：按股票 code 粘住首次 `recommend_date` 收盘价；再次推荐只增加 `recommend_count` 与新事件行，不改推荐价。涨跌幅相对该价；MFE/MAE 仍按事件日独立计算。performance 刷新的 `max_dates` 只裁剪待更新行，不算改锚点历史。 |
 | **复盘窗口入选次数** | Web `/tracking` 窗口内唯一 `(code, recommend_date)` 的数量；同股同日的 tracking 与 pending 数据源不重复计数。覆盖股票数另按 `code` 去重，两者不应混用。 |
-| **形态入表观察** | 当日 L4 中 Springboard A/B/C 至少满足 2 项、并写入 `recommendation_tracking` 的跟踪样本。同一股票有多个达标信号时按代码合并为“双/多 Wyckoff 形态共振”，`signal_types` 保留全部信号。它用于后续复盘，不等于 Step3 送审、`VALIDATED` 或 OMS 买入核准。 |
+| **形态入表观察** | 当日 L4 中 Springboard A/B/C 至少满足 2 项、并写入 `recommendation_tracking` 的跟踪样本。同一股票有多个达标信号时按代码合并为“双/多 Wyckoff 形态共振”，`signal_types` 保留全部信号。飞书卡列出全部名称（旁路/主线同样不写「另 N 只略」）；超长由 `split_lark_md` 拆多卡，不静默截断。它用于后续复盘，不等于 Step3 送审、`VALIDATED` 或 OMS 买入核准。 |
 
 ---
 
@@ -347,7 +352,7 @@ flowchart LR
 | **Steering** | 忙时注入本轮新指令（`!…` / `/steer`），经 `steering_queue` 在下一跳 model 调用前写入 messages；与排队到下一 turn 的 `input_queue` 不同。安卓对标：改正在跑 Job 的参数，而不是再 enqueue 一个新 Work。 |
 | **follow-ups（TUI）** | Agent 忙碌时普通输入进入 `input_queue`，输入框上方列出待发跟进。边框与标题用 `_UI_PALETTES.brand`（品牌主色：transparent 为 ANSI yellow / 终端标准黄，暗色主题琥珀金 `#e6b450`，浅色主题深金 `#9a6700`）。`enter` 立即排队；↑ 把最近一条用户跟进拉回编辑；esc 清空草稿或丢掉队尾跟进。与 Steering 分层。 |
 | **Auto-continuation** | 模型停了但工作未完时由 `decide_agent_loop` 自动注入续跑 prompt（截断 / 轮次上限 / 未完成必需工具），最多 2 次；与用户「继续」ResumeTurn 分层。 |
-| **FallbackProvider** | Provider 层自动切换备用模型；与用户主动 ResumeTurn **分层**，不混为一个概念。 |
+| **FallbackProvider** | Provider 层自动切换备用模型；TUI 状态栏显示实际活跃模型，无效备用配置不会掩盖默认模型的原始可恢复错误。与用户主动 ResumeTurn **分层**，不混为一个概念。 |
 | **output tok/s** | 输出生成速率：`output_tokens / generation_seconds`。`generation_seconds` 只累计模型生成窗口（首个 text/thinking delta → 该段 stream/step 结束），多步 tool 循环**不含**工具执行时间。Web 用量横幅末尾标为 `Xs gen`（模型窗口）；CLI footer 末尾 `elapsed` 仍是整轮墙钟。 |
 | **cache hit rate** | 提示缓存命中率：`cache_read_tokens / input_tokens`。仅当 provider/网关实际回报了 cache 字段时展示（含 0%）。Anthropic 原始 `input_tokens` 不含 cache，CLI 先归一化为 `input + cache_read + cache_write`。DeepSeek 优先用 `prompt_cache_hit_tokens`。与沙箱 CPU/网络 `usage` 无关。 |
 | **stream_chunk_timeout_seconds** | CLI 模型流式空闲超时（秒，默认 120，范围 10–600）：相邻 chunk 间隔（含 TTFT）超限则中断。写入 `~/.wyckoff/wyckoff.json`，控制面板可改。 |
@@ -362,14 +367,16 @@ flowchart LR
 | **本地软限流** | 未配置 Redis 或 Redis 临时故障时，单个 Worker 实例内的保护计数。实例回收或扩容后不保证全局一致，响应头通过 `local` / `local-fallback` 明确标识。 |
 | **Workers Logs** | Cloudflare Worker 免费日志：未捕获异常和 `console.error` 进控制台，约保留 3 天。不写 Supabase。 |
 | **Web Analytics** | Cloudflare 免费网站统计：匿名 PV/UV 和页面访问。可在 Pages 项目里打开，或用公开构建变量 `VITE_CF_WEB_ANALYTICS_TOKEN` 注入 beacon。不做按钮点击率。 |
-| **Clarity（白名单）** | Microsoft Clarity 点击热力图/录屏。只对有效白名单用户加载，默认项目 `y6albpfin1`，可用 `VITE_CLARITY_PROJECT_ID` 覆盖。事件进 Clarity，不写业务库。 |
+| **星球会员（Planet Member）** | 已在 `planet_members` 表绑定且未过期的登录账号。会员可使用形态跟踪、策略归因、云端持仓、隔离研究计算和手机遥控等共享云端能力；会员身份不会自动写入用户的私人模型或数据源 Key。 |
+| **Clarity（星球会员）** | Microsoft Clarity 点击热力图/录屏。只对有效星球会员加载，默认项目 `y6albpfin1`，可用 `VITE_CLARITY_PROJECT_ID` 覆盖。事件进 Clarity，不写业务库。 |
 | **新闻打点 / News chart overlay** | 单股分析页和 `analyze_stock` 诊断上的读盘叠加层：用规则过滤东方财富个股新闻，把业绩/监管/股东/交易事件对齐到交易日并标在 K 线上。不进漏斗、不改候选、不构成买卖依据。 |
-| **web_search（读盘室）** | DeepSeek Responses API 的服务端联网搜索工具；仅在读盘室、模型为 `deepseek-v4-flash`、且官方 `api.deepseek.com` origin 时注入。用于公开网页/舆情检索，不替代行情与持仓工具；搜索证据仅当轮有效。与 CLI 本机 CDP `browser_research` 不同路径。 |
+| **web_search（读盘室）** | DeepSeek Responses API 的服务端联网搜索工具；在读盘室使用官方 `deepseek-v4-flash` 或 `deepseek-v4-pro` 时注入。用于公开网页/舆情检索，不替代行情与持仓工具；搜索证据仅当轮有效。与 CLI 本机 CDP `browser_research` 不同路径。 |
+| **DeepSeek V4 思考策略** | 仅官方 DeepSeek V4 端点启用 `thinking` / `reasoning_effort`。读盘室主 Agent 使用 `high`，网页专项报告和后台结构化任务使用 `low`，读盘室嵌套 Chat 调用使用 `off`；TUI/桌面可在 `off/low/high/max` 中配置。无工具报告不会回传会被官方忽略的 `reasoning_content`：纯推理截断时提高预算重试，有正文时只按正文续写；工具型 Agent 才完整回传推理。 |
 | **browser_research（CLI）** | TUI/CLI 专用公开网页检索：Playwright 附着本机 Chrome CDP。CDP 未就绪时弹窗授权，同意后自动拉起独立调试 Chrome（`~/.wyckoff/chrome-cdp`），授权本会话有效；可用 `/browser start|status`。 |
 | **观察篮临时行情** | 读盘室按当前问题选取观察篮标的后拉取的 TickFlow 快照；浏览器缓存有效期为 45 秒，只作本轮模型上下文，不写入 Redis、持仓或信号表。 |
 | **Agent Run** | 一个按 Supabase 用户隔离的短期执行记录。当前只支持 `python_research`：提交后先返回 `queued`，由 Cloudflare Queue 消费并转为 `running`、`completed`、`failed` 或 `cancelled`；结果在 Redis 中自动过期。读盘室工具与 REST 端点复用同一记录。 |
 | **Agent Run 队列** | `wyckoff-agent-runs` 是单并发、单消息批次的 Cloudflare Queue 消费者。瞬时基础设施故障最多自动重试三次，之后转入 `wyckoff-agent-runs-dlq` 并把对应记录标为失败；Python 脚本非零退出是业务失败，不自动重跑。 |
-| **执行沙箱** | 执行 Agent 生成代码的临时 Vercel Sandbox。当前固定禁用外网与持久化，不注入业务密钥，结束后永久删除；读盘室仅在用户确认后执行，并再次校验白名单、创建次数及累计 CPU 额度；Cloudflare Worker 只承担鉴权、编排和结果返回。 |
+| **执行沙箱** | 执行 Agent 生成代码的临时 Vercel Sandbox。当前固定禁用外网与持久化，不注入业务密钥，结束后永久删除；读盘室仅在用户确认后执行，并再次校验星球会员身份、创建次数及累计 CPU 额度；Cloudflare Worker 只承担鉴权、编排和结果返回。 |
 
 ## 16. 定时调度与写操作审批
 
@@ -394,7 +401,7 @@ flowchart LR
 |------|------|
 | **两个方向** | `mcp_server.py` 是本项目**作为 server** 被 Claude Desktop / Cursor 连接；`cli/mcp_client.py` 是本项目**作为客户端**去连第三方 server。两者工具集不同、审批路径不同，不要混谈。 |
 | **配置即信任边界** | 接入一个外部 server 等于允许在本机 spawn 它的命令。因此 `~/.wyckoff/mcp_servers.json` 只由用户手写，模型不能新增 server，新增条目默认 `enabled: false`；文件权限固定为 0600。 |
-| **工具前缀** | 外部工具统一命名 `mcp__<server>__<tool>`，避免与原生 31 个工具撞名。前缀在读写判定时会被剥掉，所以 server 名叫 `deploy` 不会让它的只读工具被误判为写。 |
+| **工具前缀** | 外部工具统一命名 `mcp__<server>__<tool>`，避免与原生工具撞名。前缀在读写判定时会被剥掉，所以 server 名叫 `deploy` 不会让它的只读工具被误判为写。 |
 | **写工具启发式** | MCP 的 `annotations` 是可选的，server 不保证声明副作用。判定顺序：`readOnlyHint=True` → 读；`destructiveHint=True` → 写；工具名含 create/delete/update/send/deploy 等动词 → 写；**其余一律按写**。判错代价不对称：把读当写只多一次确认，把写当读是静默执行了副作用。 |
 | **外部工具永不 auto** | 外部写工具映射到 `review` 档，进待批准队列。`AUTO_TOOLS` 只含 `set_stop_loss`，daemon 无人监督时不会执行任何第三方写入。 |
 | **失败隔离** | 某个 server 连不上（命令不存在、进程立刻退出、协议超时）只把它自己标为不可用，不影响原生工具和其他 server。SDK 的失败以 `ExceptionGroup` / `FileNotFoundError` 形式抛出，不总是 `McpError`，所以捕获必须宽。 |

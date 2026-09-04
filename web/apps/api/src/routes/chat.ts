@@ -13,10 +13,14 @@ import {
   execQueryRecommendations,
   execScreenStocks,
   execSearchStock,
+  execStockNews,
   execStrategyDecision,
   execViewPortfolio,
   fetchMarketWatchSnapshot,
+  assessTradingDay,
   formatMarketWatchContext,
+  formatSessionClockContext,
+  resolveSessionClock,
   selectMarketWatchCodes,
   ALLOWED_PROXY_TARGET_ORIGINS,
   normalizeGeminiStream,
@@ -28,6 +32,8 @@ import {
   isAllowedModelBaseUrl,
   buildLlmUsageMetrics,
   createModelGenerationClock,
+  resolveOfficialDeepSeekModel,
+  type DeepSeekReasoningLevel,
   type LLMToolConfig,
   type Provider,
   type ToolDeps,
@@ -48,8 +54,9 @@ import {
   continuationLimitMessage,
   decideAgentLoop,
 } from '../services/chat-agent-loop'
-import { resolveChatLanguageModel } from '../services/chat-language-model'
+import { patchDeepSeekApiBody, resolveChatLanguageModel } from '../services/chat-language-model'
 import { appendMarketWatchModelMessage, buildStableChatSystemPrompt } from '../services/chat-prompt-prefix'
+import { getToolApprovalSecret } from '../services/runtime-readiness'
 
 type ChatBindings = { Bindings: Env; Variables: { auth: AuthContext } }
 
@@ -126,11 +133,16 @@ const WYCKOFF_CHAT_SYSTEM_PROMPT = `# 角色设定
 4. 风险声明：涉及具体操作建议时，附带风险提示。
 5. 技术面为主：价值面只用于质量、风险、置信度和仓位校准，不能替代 K 线事实。
 6. 策略归因问题必须调用 query_attribution，先确认返回结果是否来自远端表或提示本地 --no-write 报告，再优先读取 operator_summary / latest_operator_summary 作为运营结论，然后读取 latest_policy_display、latest_execution_summary、promotion_checklist 和 latest_operations 后判断信号升降权、是否能晋级 dynamic=on，以及 shadow 新增/移除样本；raw next_action/promotion_status 只作追证据，不直接复述给用户。
-7. 只有用户明确要求进行 Python 计算、回测或统计时，才可调用 run_python_research。先说明计算目的；该工具必须等待用户确认，脚本只处理已知、有限的数据，不能把猜测当作数据来源。`
+7. 只有用户明确要求进行 Python 计算、回测或统计时，才可调用 run_python_research。先说明计算目的；该工具必须等待用户确认，脚本只处理已知、有限的数据，不能把猜测当作数据来源。
+8. 时间与交易时段以本轮注入的「当前时间与交易时段」为准，不得自行推算或编造。涉及盘面的回复先写出那一行北京时间；处于非交易日/非交易时段时，只做盘后复盘、次日计划与 T+1 委托策略，不给「立刻买/立刻卖」的指令。
+9. 复权口径以本轮注入的「复权口径」为准：结构价位来自前复权，委托价须是不复权实时价。两者被判定错开时，先说明差异，不得把结构价位直接当作委托价。
+10. analyze_stock 的 chart_plan 用于前端作图：日期必须取自工具返回的真实交易日，判断不出的阶段就留空，不要为了凑齐五个阶段而编。若处于可盘中交易时段且该股已有持仓，则不填 chart_plan（置为 null），直接给结论与操作口径 —— 盘中持仓看的是当下怎么办，不是回顾结构。
+11. 消息只用于核证，顺序不可颠倒：先用 analyze_stock 得出量价结构结论，再调用 stock_news 看消息能否对上。消息与结构冲突时说明冲突，不要用消息改写结构判断，也不要把消息当作买卖依据。stock_news 返回空只说明检索没命中，不等于无事发生，不得据此断言「没有利空」。`
 
 const WEB_SEARCH_GUIDANCE = `# 联网搜索
 
-公开网页信息、未上市/IPO、舆情、公告或本地库查不到时，优先调用 web_search 做服务端联网检索。
+公开网页信息、未上市/IPO、舆情、宏观或本地库查不到时，优先调用 web_search 做服务端联网检索。
+A股个股消息优先用 stock_news（覆盖更稳、字段结构化）；web_search 用于它覆盖不到的场景。
 行情、持仓、形态复盘和归因仍必须用对应本地工具，不得用网页搜索替代 K 线事实。
 搜索结果仅当轮有效；跨轮追问时如需最新网页证据应再次搜索。`
 
@@ -171,26 +183,16 @@ function getEnvValue(env: Env, key: 'SUPABASE_URL' | 'SUPABASE_ANON_KEY'): strin
   return value
 }
 
-// Prefer an independent key. During rollout, a one-way domain-separated digest keeps the
-// service-role value itself out of the wider approval-token trust boundary.
-export async function getToolApprovalSecret(env: Env): Promise<string> {
-  const secret = env.CHAT_TOOL_APPROVAL_SECRET
-  if (secret) return secret
-  const serviceRole = env.SUPABASE_SERVICE_ROLE_KEY
-  if (!serviceRole) throw new Error('Missing CHAT_TOOL_APPROVAL_SECRET')
-  const bytes = new TextEncoder().encode(`wyckoff-chat-tool-approval\0${serviceRole}`)
-  const digest = await crypto.subtle.digest('SHA-256', bytes)
-  return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, '0')).join('')
-}
-
 function createToolDeps(supabase: ToolDeps['supabase']): ToolDeps {
   return { supabase, fetch: createToolFetch(), generateText }
 }
 
-function createProviderFetch(): typeof globalThis.fetch {
+function createProviderFetch(reasoningLevel?: DeepSeekReasoningLevel): typeof globalThis.fetch {
   return async (input, init) => {
     const requestUrl = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url
-    const patchedBody = isOneRouteChatCompletion(requestUrl) ? patchOneRouteBody(init?.body) : init?.body
+    const oneRouteBody = isOneRouteChatCompletion(requestUrl) ? patchOneRouteBody(init?.body) : init?.body
+    const deepSeekLevel = requestUrl.endsWith('/responses') ? reasoningLevel : 'off'
+    const patchedBody = patchDeepSeekApiBody(requestUrl, oneRouteBody, deepSeekLevel)
     const response = await globalThis.fetch(input, { ...init, body: patchedBody, redirect: 'manual' })
     if (response.status >= 300 && response.status < 400) throw new Error('Model provider redirects are not allowed')
     if (isGeminiChatCompletion(requestUrl) && isSseResponse(response) && response.body) {
@@ -216,7 +218,11 @@ function createToolFetch(): typeof globalThis.fetch {
   }
 }
 
-type ChatModelConfig = LLMToolConfig & { protocol?: 'openai' | 'anthropic'; provider: string }
+type ChatModelConfig = LLMToolConfig & {
+  protocol?: 'openai' | 'anthropic'
+  provider: string
+  reasoning_level?: DeepSeekReasoningLevel
+}
 
 async function loadLLMConfig(supabase: ToolDeps['supabase'], userId: string): Promise<ChatModelConfig | null> {
   return (await loadLLMConfigs(supabase, userId))[0] || null
@@ -237,8 +243,17 @@ async function loadLLMConfigs(supabase: ToolDeps['supabase'], userId: string): P
     .filter((provider) => !['zhipu', 'minimax', 'qwen', 'volcengine'].includes(provider))
     .flatMap((provider) => {
       const config = configForProvider(settings, provider)
-      return config ? [{ ...config, provider }] : []
+      return config ? [normalizeDeepSeekChatConfig({ ...config, provider })] : []
     })
+}
+
+function normalizeDeepSeekChatConfig(config: ChatModelConfig): ChatModelConfig {
+  const resolved = resolveOfficialDeepSeekModel(config.provider, config.model, config.base_url)
+  return {
+    ...config,
+    model: resolved.model,
+    ...(resolved.reasoningLevel ? { reasoning_level: resolved.reasoningLevel } : {}),
+  }
 }
 
 type UserSettingsRow = Record<string, string | Record<string, unknown> | null>
@@ -327,13 +342,19 @@ async function runChatWithResilience(args: ChatResilienceArgs): Promise<void> {
   const marketWatch = await fetchMarketWatchSnapshot(args.deps, args.userId, selectedCodes, args.marketWatchCache)
   if (marketWatch.state !== 'empty') writeMarketWatchStatus(args.writer, marketWatch)
   const marketWatchContext = formatMarketWatchContext(marketWatch)
+  // 时间取本轮实测，交易日用行情时间戳证实 —— 节假日算不出来，只能观测。
+  const clock = resolveSessionClock(new Date())
+  const sessionClockContext = formatSessionClockContext(
+    clock,
+    assessTradingDay(clock, marketWatch.state === 'ready' ? marketWatch.quotes.map((quote) => quote.asOf) : []),
+  )
   let lastError: unknown = new Error('没有可用的模型配置')
   for (let index = 0; index < args.configs.length; index += 1) {
     const config = args.configs[index]
     if (!config) continue
     for (let attempt = 1; attempt <= 2; attempt += 1) {
       try {
-        await runChatAttempt(args, config, marketWatchContext)
+        await runChatAttempt(args, config, marketWatchContext, sessionClockContext)
         return
       } catch (error) {
         lastError = error
@@ -378,15 +399,14 @@ async function runChatSegment(
     system,
     messages: modelMessages,
     tools,
-    maxOutputTokens: CHAT_MAX_OUTPUT_TOKENS,
+    maxOutputTokens: resolved.maxOutputTokens ?? CHAT_MAX_OUTPUT_TOKENS,
     stopWhen: stepCountIs(maxSteps),
     abortSignal: args.signal,
-    experimental_toolApprovalSecret: await getToolApprovalSecret(args.env),
+    experimental_toolApprovalSecret: getToolApprovalSecret(args.env),
     providerOptions: {
       openai: {
-        parallelToolCalls: false,
-        // DeepSeek Responses is stateless; avoid item_reference round-trips for web_search.
-        ...(resolved.transport === 'responses' ? { store: false } : {}),
+        // DeepSeek Responses is stateless and always allows parallel tools.
+        ...(resolved.transport === 'responses' ? { store: false } : { parallelToolCalls: false }),
       },
     },
   })
@@ -484,24 +504,39 @@ function buildChatSystemPrompt(transport: 'chat' | 'responses'): string {
   })
 }
 
-async function runChatAttempt(args: ChatResilienceArgs, config: ChatModelConfig, marketWatchContext: string): Promise<void> {
+/** 当轮消息：历史前缀 + 挂在末尾的时间和行情。 */
+async function buildTurnModelMessages(
+  args: ChatResilienceArgs,
+  resolved: ReturnType<typeof resolveChatLanguageModel>,
+  tools: any,
+  sessionClockContext: string,
+  marketWatchContext: string,
+) {
+  const recentMessages = removeSupersededToolApprovals(args.messages.slice(-40))
+  const normalizedMessages = resolved.transport === 'chat'
+    ? sanitizeMessagesForChatTransport(recentMessages)
+    : recentMessages
+  const modelMessages = await convertToModelMessages(normalizedMessages, {
+    tools,
+    ignoreIncompleteToolCalls: true,
+  })
+  // 时间与行情都作为当轮额外 user 消息挂在末尾，不改写 system / 历史前缀。
+  // 时间每轮都变，写进 system 等于每轮击穿 prompt cache。
+  return appendMarketWatchModelMessage(
+    appendMarketWatchModelMessage(modelMessages, sessionClockContext),
+    marketWatchContext,
+  )
+}
+
+async function runChatAttempt(args: ChatResilienceArgs, config: ChatModelConfig, marketWatchContext: string, sessionClockContext: string): Promise<void> {
   writeRunEvent(args, { type: 'model_started', label: `开始使用 ${config.model}` })
   writeStageProgress(args.writer, { stage: 'model', state: 'started', message: '正在分析', model: config.model })
   let succeeded = false
   let outputStarted = false
   try {
-    const resolved = resolveChatLanguageModel(config, createProviderFetch())
+    const resolved = resolveChatLanguageModel(config, createProviderFetch(config.reasoning_level))
     const tools = buildTools(args, config, resolved.nestedModel, resolved.providerTools)
-    const recentMessages = removeSupersededToolApprovals(args.messages.slice(-40))
-    const normalizedMessages = resolved.transport === 'chat'
-      ? sanitizeMessagesForChatTransport(recentMessages)
-      : recentMessages
-    let modelMessages = await convertToModelMessages(normalizedMessages, {
-      tools,
-      ignoreIncompleteToolCalls: true,
-    })
-    // 行情作为当轮额外 user 消息挂在末尾，不改写 system / 历史前缀。
-    modelMessages = appendMarketWatchModelMessage(modelMessages, marketWatchContext)
+    let modelMessages = await buildTurnModelMessages(args, resolved, tools, sessionClockContext, marketWatchContext)
     let continuationCount = 0
     let totalSteps = 0
     let segmentIndex = 0
@@ -648,6 +683,7 @@ function buildReadTools(deps: ToolDeps, userId: string, model: unknown) {
     view_portfolio: tool({ description: '查看用户当前持仓列表和可用资金。', inputSchema: z.object({}), execute: () => execViewPortfolio(deps, userId) }),
     market_overview: tool({ description: '查看当前/最新大盘行情信号。', inputSchema: z.object({}), execute: () => execMarketOverview(deps) }),
     market_history: tool({ description: '回看大盘指数过去N个交易日K线，分析量价关系和威科夫阶段。', inputSchema: z.object({ days: z.number().nullable(), index: z.enum(['sse', 'csi300', 'szse', 'chinext']).nullable() }), execute: ({ days, index }) => execMarketHistory(deps, userId, model, days ?? 100, index ?? 'sse') }),
+    stock_news: tool({ description: 'A股个股近期消息（东方财富），用于核证量价结构判断。两条模型通道都可用，不依赖服务端联网检索。', inputSchema: z.object({ code: z.string(), name: z.string().nullable(), limit: z.number().nullable() }), execute: ({ code, name, limit }) => execStockNews(deps, code, name, limit ?? 12) }),
     query_recommendations: tool({ description: '查询形态复盘记录。', inputSchema: z.object({ limit: z.number() }), execute: ({ limit }) => execQueryRecommendations(deps, limit) }),
     query_attribution: tool({ description: '查询远端策略归因治理器、operator_summary、latest_policy_display、latest_execution_summary、promotion_checklist 和 latest_operations；本地 --no-write 报告需走 CLI/MCP。', inputSchema: z.object({ limit: z.number() }), execute: ({ limit }) => execQueryAttribution(deps, limit) }),
   }

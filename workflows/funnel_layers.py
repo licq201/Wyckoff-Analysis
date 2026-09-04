@@ -17,6 +17,7 @@ from core.theme_activity import build_theme_activity_snapshot
 from core.theme_radar import build_theme_radar_snapshot
 from core.wyckoff_engine import (
     FunnelConfig,
+    build_layer2_evaluation_context,
     detect_leader_radar,
     layer1_filter,
     layer2_strength_detailed,
@@ -61,6 +62,11 @@ class FunnelLayerOutputs:
     mainline_candidates: list[dict]
     mainline_ai_cap: int
     rps_universe_count: int
+    # L2 算过的 RPS 快/慢线,原本用完即弃。留下来是为了写进 trace:影子车道的效果
+    # 检验要「同动量随机对照」,不记录当日动量,事后就只能拿全市场当对照,会把择时
+    # 读成选股(见 memory full-market-control-confounds-momentum)。
+    rps_fast_map: dict[str, float]
+    rps_slow_map: dict[str, float]
 
 
 def run_base_funnel_layers(
@@ -70,17 +76,14 @@ def run_base_funnel_layers(
     window,
     cfg: FunnelConfig,
     ref_data: FunnelReferenceData,
-    etf_l2_passed: list[str],
-    etf_sector_map: dict[str, str],
-    etf_df_map: dict[str, pd.DataFrame],
     benchmark_context: dict,
 ) -> FunnelLayerOutputs:
     print("[funnel] 开始执行全量漏斗筛选...")
     _report_progress("漏斗筛选", "L1~L4 计算中", 0.85)
     l1_input = list(all_df_map.keys())
-    l1_passed, l2_passed, l2_channel_map, l2_rejections = _run_strength_layers(
-        l1_input, all_df_map, bench_df, cfg, ref_data
-    )
+    strength = _run_strength_layers(l1_input, all_df_map, bench_df, cfg, ref_data)
+    l1_passed, l2_passed = strength.l1_passed, strength.l2_passed
+    l2_channel_map = strength.l2_channel_map
     theme_activity = _build_theme_activity(window, ref_data, all_df_map)
     l3_passed, top_sectors, sector_rotation = _run_sector_layer(
         l1_passed,
@@ -88,9 +91,6 @@ def run_base_funnel_layers(
         all_df_map,
         cfg,
         ref_data,
-        etf_l2_passed,
-        etf_sector_map,
-        etf_df_map,
         _hot_concepts(ref_data, theme_activity),
         regime=benchmark_context.get("regime"),
         benchmark_context=benchmark_context,
@@ -114,10 +114,7 @@ def run_base_funnel_layers(
     )
     return _build_funnel_layer_outputs(
         l1_input=l1_input,
-        l1_passed=l1_passed,
-        l2_passed=l2_passed,
-        l2_channel_map=l2_channel_map,
-        l2_rejections=l2_rejections,
+        strength=strength,
         l3_passed=l3_passed,
         top_sectors=top_sectors,
         sector_rotation=sector_rotation,
@@ -135,10 +132,7 @@ def run_base_funnel_layers(
 
 def _build_funnel_layer_outputs(
     l1_input: list[str],
-    l1_passed: list[str],
-    l2_passed: list[str],
-    l2_channel_map: dict[str, str],
-    l2_rejections: dict[str, str],
+    strength: _StrengthLayerResult,
     l3_passed: list[str],
     top_sectors: list[str],
     sector_rotation: dict,
@@ -153,11 +147,11 @@ def _build_funnel_layer_outputs(
     mainline_cfg: Any,
 ) -> FunnelLayerOutputs:
     return FunnelLayerOutputs(
-        l1_passed=l1_passed,
-        l2_passed=l2_passed,
-        l2_channel_map=l2_channel_map,
-        l2_rejections=l2_rejections,
-        l2_counts=_l2_channel_counts(l2_channel_map),
+        l1_passed=strength.l1_passed,
+        l2_passed=strength.l2_passed,
+        l2_channel_map=strength.l2_channel_map,
+        l2_rejections=strength.l2_rejections,
+        l2_counts=_l2_channel_counts(strength.l2_channel_map),
         l3_passed=l3_passed,
         top_sectors=top_sectors,
         sector_rotation=sector_rotation,
@@ -173,6 +167,8 @@ def _build_funnel_layer_outputs(
         mainline_candidates=mainline_candidates,
         mainline_ai_cap=mainline_cfg.max_ai_candidates,
         rps_universe_count=len(l1_input),
+        rps_fast_map=strength.rps_fast_map,
+        rps_slow_map=strength.rps_slow_map,
     )
 
 
@@ -196,17 +192,30 @@ def _structure_shadow(
         }
 
 
+@dataclass(frozen=True)
+class _StrengthLayerResult:
+    l1_passed: list[str]
+    l2_passed: list[str]
+    l2_channel_map: dict[str, str]
+    l2_rejections: dict[str, str]
+    rps_fast_map: dict[str, float]
+    rps_slow_map: dict[str, float]
+
+
 def _run_strength_layers(
     l1_input: list[str],
     all_df_map: dict[str, pd.DataFrame],
     bench_df: pd.DataFrame | None,
     cfg: FunnelConfig,
     ref_data: FunnelReferenceData,
-) -> tuple[list[str], list[str], dict[str, str], dict[str, str]]:
+) -> _StrengthLayerResult:
     l1_passed = layer1_filter(
         l1_input, ref_data.name_map, ref_data.market_cap_map, all_df_map, cfg, financial_map=ref_data.financial_map
     )
     l2_rejections: dict[str, str] = {}
+    # 显式建 context 而不是让 layer2 内部建:RPS 快/慢线在里面算过一次,不接出来
+    # 就只能事后重算一遍(或者干脆没有动量,同动量对照做不成)。
+    context = build_layer2_evaluation_context(l1_passed, all_df_map, bench_df, cfg, rps_universe=l1_input)
     l2_passed, l2_channel_map, _pre_ignition = layer2_strength_detailed(
         l1_passed,
         all_df_map,
@@ -214,8 +223,16 @@ def _run_strength_layers(
         cfg,
         rps_universe=l1_input,
         rejections=l2_rejections,
+        evaluation_context=context,
     )
-    return l1_passed, l2_passed, l2_channel_map, l2_rejections
+    return _StrengthLayerResult(
+        l1_passed=l1_passed,
+        l2_passed=l2_passed,
+        l2_channel_map=l2_channel_map,
+        l2_rejections=l2_rejections,
+        rps_fast_map=dict(context.rps.fast or {}),
+        rps_slow_map=dict(context.rps.slow or {}),
+    )
 
 
 def _run_sector_layer(
@@ -224,34 +241,27 @@ def _run_sector_layer(
     all_df_map: dict[str, pd.DataFrame],
     cfg: FunnelConfig,
     ref_data: FunnelReferenceData,
-    etf_l2_passed: list[str],
-    etf_sector_map: dict[str, str],
-    etf_df_map: dict[str, pd.DataFrame],
     activity_hot_concepts: list[str],
     regime: str | None = None,
     benchmark_context: dict | None = None,
 ) -> tuple[list[str], list[str], dict]:
-    etf_codes = set(etf_sector_map)
-    layer3_sector_map = {**ref_data.sector_map, **etf_sector_map}
-    layer3_df_map = {**all_df_map, **etf_df_map}
     l3_raw, top_sectors = layer3_sector_resonance(
-        l2_passed + etf_l2_passed,
-        layer3_sector_map,
+        l2_passed,
+        ref_data.sector_map,
         cfg,
-        base_symbols=l1_passed + list(etf_codes & set(etf_df_map)),
-        df_map=layer3_df_map,
+        base_symbols=l1_passed,
+        df_map=all_df_map,
         concept_map=ref_data.concept_map,
         hot_concepts=list(dict.fromkeys([*ref_data.hot_concepts, *activity_hot_concepts])),
     )
     is_repair = regime in {"PANIC_REPAIR", "PANIC_REPAIR_CONFIRMED", "PANIC_REPAIR_INTRADAY", "BEAR_REBOUND"}
     if is_repair:
         print("[funnel] 修复期风格切换第一天，Layer 3 板块共振过滤已从硬过滤降级为加分项。")
-        l3_passed_normal = [s for s in l3_raw if s not in etf_codes]
         if benchmark_context is not None:
-            benchmark_context["l3_passed_normal"] = l3_passed_normal
-        l3_passed = [s for s in l2_passed if s not in etf_codes]
+            benchmark_context["l3_passed_normal"] = list(l3_raw)
+        l3_passed = list(l2_passed)
     else:
-        l3_passed = [s for s in l3_raw if s not in etf_codes]
+        l3_passed = list(l3_raw)
     sector_rotation = analyze_sector_rotation(
         all_df_map,
         ref_data.sector_map,
